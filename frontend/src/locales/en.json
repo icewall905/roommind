@@ -642,5 +642,17 @@
   "roomcard.editor.hide_climate_control": "Hide climate control switch",
   "roomcard.editor.hide_temperatures": "Hide comfort and eco temperatures",
   "roomcard.paused": "paused",
-  "roomcard.editor.compact": "Compact layout"
+  "roomcard.editor.compact": "Compact layout",
+  "override.drying": "Drying",
+  "override.drying_target": "Dry at:",
+  "drying.label": "Drying",
+  "drying.ends_by": "ends by {time}",
+  "drying.no_humidity": "No humidity sensor: drying runs for the set duration only.",
+  "drying.vent_hint": "Open the window ~10 min",
+  "drying.offset_boost_active": "TRV offset boost active",
+  "notifications.drying_targets": "Drying notifications",
+  "notifications.drying_targets_hint": "Falls back to mold targets when empty",
+  "notifications.drying_add_target_label": "Add drying notification device",
+  "devices.drying_offset_boost": "Allow temperature-offset boost during drying",
+  "devices.drying_offset_boost_hint": "Lets RoomMind temporarily apply a negative temperature offset so the thermostat heats past its own maximum while drying. Currently only acts on Tado devices."
 }

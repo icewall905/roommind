@@ -116,7 +116,7 @@ class MPCOptimizer:
     outdoor_cooling_min: float = 16.0
     outdoor_heating_max: float = 22.0
     temp_min: float = 5.0  # frost protection
-    temp_max: float = 30.0  # overheat protection
+    temp_max: float = 35.0  # overheat protection (= MAX_TARGET_TEMP, so drying targets up to 35 °C are not clipped)
     override_active: bool = False
     heating_system_type: str = ""  # key into HEATING_SYSTEM_PROFILES; "" = unknown
     approach_rate: float = 1.0  # fraction of remaining gap closed per block; 1.0 = legacy deadbeat
@@ -646,8 +646,8 @@ class MPCOptimizer:
     def _temp_bounds(self, T_start: float) -> tuple[float, float]:
         """Clamp range for predictions that start at *T_start*.
 
-        A fixed 30 °C ceiling made a room above it invisible to the cost: every
-        hypothesis that could not bring it below 30 within the lookahead clamped to
+        A fixed ceiling made a room above it invisible to the cost: every
+        hypothesis that could not bring it below the ceiling within the lookahead clamped to
         the same value at every block, idle won the tie, and a weak AC stayed off
         while the room heated further.
         """

@@ -76,6 +76,7 @@ from .managers.compressor_group_manager import (
 )
 from .managers.cover_orchestrator import CoverOrchestrator, CoverResult
 from .managers.device_setpoint_tracker import DeviceSetpointTracker
+from .managers.drying_manager import DryingManager, is_drying_active
 from .managers.ekf_training_manager import EkfTrainingManager
 from .managers.head_offset_tracker import HeadOffsetTracker
 from .managers.heat_source_orchestrator import HeatSourcePlan, evaluate_heat_sources
@@ -227,6 +228,8 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         self._valve_manager = ValveManager(hass)
         # Mold risk tracking
         self._mold_manager = MoldManager(hass)
+        # Drying mode (laundry): humidity tracking, airing prompts, thermostat offset boost
+        self._drying_manager = DryingManager(hass)
         # Residual heat tracking (heating → idle transition)
         self._residual_tracker = ResidualHeatTracker()
         # AC rebound charge (air pulled below the building mass while cooling)
@@ -337,6 +340,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             self._valve_manager.load_actuation_data(settings.get("valve_last_actuation", {}))
             self._coil_dry_manager.load_state(settings.get("coil_dry_state", {}))
             self._head_offsets.load_state(settings.get("ac_head_offsets", {}))
+            self._drying_manager.load_state(settings.get("drying_state", {}))
             self._model_loaded = True
 
         # Initialize history store (once)
@@ -375,6 +379,15 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 room_states[area_id] = room_state
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Room '%s': processing failed, skipping", area_id)
+
+        # Drying runs of rooms not evaluated any more end here, their offsets restored
+        await self._drying_manager.async_prune(
+            {area_id for area_id, room in rooms.items() if not room.get("is_outdoor", False)}
+        )
+        await self._drying_manager.async_retry_restores()
+        if self._drying_manager.state_dirty:
+            await store.async_save_settings({"drying_state": self._drying_manager.get_state()})
+            self._drying_manager.state_dirty = False
 
         # Control master devices based on aggregate room demand
         await self._async_control_master_devices(room_states, rooms, settings)
@@ -817,6 +830,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 "mold_surface_temp": None,
                 "mold_prevention_active": False,
                 "mold_prevention_delta": 0,
+                "drying": None,
                 "shading_factor": 1.0,
                 "n_observations": 0,
                 "blind_position": None,
@@ -879,18 +893,20 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         # Apply mold prevention temperature delta (heating target only).
         # Safety: mold prevention overrides "off" to prevent structural damage.
         force_off = targets.heat is None and targets.cool is None
-        if mold_prevention_active_room and mold_prevention_temp_delta > 0:
+        # A drying run already heats hard against the humidity; prevention would push it past the chosen target
+        mold_delta_applied = 0.0 if is_drying_active(room) else mold_prevention_temp_delta
+        if mold_prevention_active_room and mold_delta_applied > 0:
             if force_off:
                 eco_heat = room.get("eco_heat", room.get("eco_temp", DEFAULT_ECO_HEAT))
                 eco_cool = room.get("eco_cool", DEFAULT_ECO_COOL)
                 targets = TargetTemps(
-                    heat=eco_heat + mold_prevention_temp_delta,
+                    heat=eco_heat + mold_delta_applied,
                     cool=eco_cool,
                 )
                 force_off = False
             elif targets.heat is not None:
                 targets = TargetTemps(
-                    heat=targets.heat + mold_prevention_temp_delta,
+                    heat=targets.heat + mold_delta_applied,
                     cool=targets.cool,
                 )
         targets = TargetTemps(*cap_cool_only_heat(targets.heat, targets.cool, room.get("climate_mode", "auto")))
@@ -901,7 +917,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             settings,
             hass=self.hass,
             presence_away=presence_away,
-            mold_prevention_delta=mold_prevention_temp_delta,
+            mold_prevention_delta=mold_delta_applied,
             room_vacant=occupancy_vacant,
         )
 
@@ -1364,6 +1380,19 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             compressor_held=compressor_forced_on,
         )
 
+        drying = await self._drying_manager.async_evaluate(
+            area_id,
+            _get_area_name(self.hass, area_id),
+            room,
+            current_temp,
+            current_humidity,
+            raw_open,
+            settings,
+            # The thermostat's own reading includes the offset: no boost when RoomMind relies on it
+            offset_boost_allowed=has_external_sensor,
+            control_active=climate_active,
+        )
+
         return self._build_room_state_dict(
             area_id=area_id,
             room=room,
@@ -1401,6 +1430,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             compressor_protection_reason=compressor_protection_reason,
             compressor_protection_until=compressor_protection_until,
             coil_dry=coil_dry,
+            drying=drying,
         )
 
     async def _observe_and_train(
@@ -1675,6 +1705,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         compressor_protection_reason: str | None = None,
         compressor_protection_until: float | None = None,
         coil_dry: CoilDryRoomResult | None = None,
+        drying: dict | None = None,
     ) -> dict:
         """Build the final room state dictionary."""
         _room_devices = room.get("devices", [])
@@ -1769,6 +1800,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             "mold_surface_temp": (round(mold_surface_temp, 1) if mold_surface_temp is not None else None),
             "mold_prevention_active": mold_prevention_active_room,
             "mold_prevention_delta": mold_prevention_temp_delta,
+            "drying": drying,
             "shading_factor": shading_factor,
             "q_occupancy": q_occupancy,
             "n_observations": self._model_manager.get_n_observations(area_id),
@@ -2387,6 +2419,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
     async def async_room_removed(self, area_id: str) -> None:
         """Remove a deleted room's entities, run state, model and history, then refresh."""
         self._forget_room(area_id)
+        await self._drying_manager.async_end(area_id)
         self._model_manager.remove_room(area_id)
         if self._history_store:
             await self.hass.async_add_executor_job(self._history_store.remove_room, area_id)
@@ -2399,6 +2432,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         entities before HA has taken them down.
         """
         self._forget_room(area_id)
+        await self._drying_manager.async_end(area_id)
 
     async def _async_switch_resting_rooms_off(
         self, stored_rooms: dict[str, dict], running: dict[str, dict], settings: dict

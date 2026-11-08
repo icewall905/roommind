@@ -3,6 +3,7 @@
 import pytest
 
 from custom_components.roommind.utils.mold_utils import (
+    absolute_humidity,
     calculate_mold_risk,
     dew_point,
     estimate_surface_temp,
@@ -280,3 +281,29 @@ def test_surface_rh_thresholds_exact():
     assert _risk_from_surface_rh(70.0) == "warning"
     assert _risk_from_surface_rh(79.9) == "warning"
     assert _risk_from_surface_rh(80.0) == "critical"
+
+
+# --- absolute_humidity ---
+
+
+@pytest.mark.parametrize(
+    ("temp", "rh", "expected"),
+    [
+        (20.0, 50.0, 8.65),  # textbook value ~8.6 g/m³
+        (30.0, 60.0, 18.2),
+        (0.0, 100.0, 4.85),
+    ],
+)
+def test_absolute_humidity_reference_values(temp, rh, expected):
+    assert absolute_humidity(temp, rh) == pytest.approx(expected, abs=0.1)
+
+
+def test_absolute_humidity_zero_and_clamped():
+    assert absolute_humidity(20.0, 0.0) == 0.0
+    assert absolute_humidity(20.0, -5.0) == 0.0
+    assert absolute_humidity(20.0, 120.0) == absolute_humidity(20.0, 100.0)
+
+
+def test_absolute_humidity_same_rh_holds_more_water_when_warmer():
+    """Heating the room at constant water content lowers RH; at equal RH warm air carries more water."""
+    assert absolute_humidity(30.0, 60.0) > absolute_humidity(20.0, 60.0)

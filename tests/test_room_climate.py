@@ -522,7 +522,73 @@ async def test_same_mode_leaves_the_held_band_alone(setup):
 
 def test_manual_preset_is_offered(setup):
     make, *_ = setup
-    assert make().preset_modes == ["none", "comfort", "eco", "manual"]
+    assert make().preset_modes == ["none", "comfort", "eco", "manual", "drying"]
+
+
+def test_drying_preset_not_offered_in_cool_only_room(setup):
+    make, *_ = setup
+    assert make(_room(climate_mode="cool_only", devices=[AC])).preset_modes == ["none", "comfort", "eco", "manual"]
+
+
+@pytest.mark.asyncio
+async def test_drying_preset_starts_a_bounded_heat_only_run(setup):
+    make, coordinator, store, _ = setup
+    before = time.time()
+    await make().async_set_preset_mode("drying")
+    written = _written(store)
+    assert written["override_heat"] == 30.0
+    assert written["override_cool"] is None
+    assert written["override_type"] == "drying"
+    assert before + 8 * 3600 <= written["override_until"] <= time.time() + 8 * 3600
+    coordinator.async_request_refresh.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_drying_preset_while_drying_changes_nothing(setup):
+    make, _, store, _ = setup
+    entity = make(_room(override_heat=30.0, override_type="drying", override_until=time.time() + 3600))
+    assert entity.preset_mode == "drying"
+    await entity.async_set_preset_mode("drying")
+    store.async_update_room.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_drying_preset_rejected_in_cool_only_room(setup):
+    make, _, store, _ = setup
+    with pytest.raises(ServiceValidationError):
+        await make(_room(climate_mode="cool_only", devices=[AC])).async_set_preset_mode("drying")
+    store.async_update_room.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_other_preset_ends_drying(setup):
+    make, _, store, _ = setup
+    entity = make(_room(override_heat=30.0, override_type="drying", override_until=time.time() + 3600))
+    await entity.async_set_preset_mode("none")
+    assert _written(store)["override_type"] is None
+
+
+@pytest.mark.asyncio
+async def test_turning_off_ends_drying(setup):
+    make, coordinator, store, _ = setup
+    entity = make(_room(override_heat=30.0, override_type="drying", override_until=time.time() + 3600))
+    await entity.async_set_hvac_mode(HVACMode.OFF)
+    assert _written(store) == {
+        "override_heat": None,
+        "override_cool": None,
+        "override_until": None,
+        "override_type": None,
+    }
+    coordinator.async_turn_room_off.assert_awaited_once_with("living_room")
+
+
+@pytest.mark.asyncio
+async def test_turning_off_without_drying_keeps_the_override(setup):
+    make, coordinator, store, _ = setup
+    entity = make(_room(override_heat=22.0, override_cool=25.0, override_type="custom"))
+    await entity.async_set_hvac_mode(HVACMode.OFF)
+    store.async_update_room.assert_not_awaited()
+    coordinator.async_turn_room_off.assert_awaited_once_with("living_room")
 
 
 @pytest.mark.asyncio

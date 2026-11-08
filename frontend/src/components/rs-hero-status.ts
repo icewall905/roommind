@@ -3,7 +3,7 @@ import { customElement, property, state } from "lit/decorators.js";
 import type { HomeAssistant, HassArea, RoomConfig, OverrideType } from "../types";
 import { getModeClass, formatMode, minutesLeft } from "../utils/room-state";
 import { modeStyles } from "../styles/shared-mode-styles";
-import { formatRemaining } from "../utils/override";
+import { dryingLines, formatRemaining } from "../utils/override";
 import { localize } from "../utils/localize";
 import { formatTemp, tempUnit, toDisplayDelta } from "../utils/temperature";
 import "./shared/rs-info-icon";
@@ -128,6 +128,16 @@ export class RsHeroStatus extends LitElement {
 
       .hero-target-label.override-eco {
         color: #4caf50;
+      }
+
+      .hero-target-label.override-drying {
+        color: #00acc1;
+      }
+
+      .hero-drying {
+        margin-top: 6px;
+        font-size: 12px;
+        color: var(--secondary-text-color);
       }
 
       .hero-target-label.override-custom {
@@ -359,13 +369,22 @@ export class RsHeroStatus extends LitElement {
 
     if (ov) {
       const icon =
-        ov.type === "boost" ? "mdi:fire" : ov.type === "eco" ? "mdi:leaf" : "mdi:thermometer";
+        ov.type === "boost"
+          ? "mdi:fire"
+          : ov.type === "eco"
+            ? "mdi:leaf"
+            : ov.type === "drying"
+              ? "mdi:tumble-dryer"
+              : "mdi:thermometer";
       const label =
         ov.type === "boost"
           ? localize("override.comfort", l)
           : ov.type === "eco"
             ? localize("override.eco", l)
-            : localize("override.custom", l);
+            : ov.type === "drying"
+              ? localize("override.drying", l)
+              : localize("override.custom", l);
+      const dryingInfo = ov.type === "drying" ? dryingLines(live, l) : [];
       const colorClass = `override-${ov.type}`;
       const ovHeat = ov.heat;
       const ovCool = ov.cool;
@@ -395,6 +414,7 @@ export class RsHeroStatus extends LitElement {
                 </div>`
               : nothing
           }
+          ${dryingInfo.map((line) => html`<div class="hero-drying">${line}</div>`)}
         </div>
       `;
     }

@@ -6,7 +6,20 @@ export type ClimateMode = "auto" | "heat_only" | "cool_only";
 
 export type RoomMode = "idle" | "heating" | "cooling";
 
-export type OverrideType = "boost" | "eco" | "custom";
+export type OverrideType = "boost" | "eco" | "custom" | "drying";
+
+/** Live state of an active drying run (null on the room when inactive). */
+export interface DryingLiveData {
+  started_at: number;
+  until: number;
+  target: number;
+  humidity: number | null;
+  abs_humidity: number | null; // g/m³
+  baseline_abs_humidity: number | null;
+  vent_suggested: boolean;
+  last_vent_prompt_at: number | null;
+  offset_boost: Record<string, number>; // entity_id -> applied temperature offset
+}
 
 export interface NotificationTarget {
   entity_id: string;
@@ -38,6 +51,7 @@ export interface RoomLiveData {
   override_cool: number | null;
   override_until: number | null;
   override_suppressed: boolean;
+  drying?: DryingLiveData | null;
   active_schedule_index: number;
   window_open: boolean;
   confidence: number | null;
@@ -88,6 +102,7 @@ export interface DeviceConfig {
   setback_auto_off?: boolean; // setback ends in off after an hour without demand, default off (#255)
   setpoint_mode?: "proportional" | "direct"; // default "proportional"
   setpoint_offset?: number; // °C added to the room target in direct mode, default 0
+  drying_offset_boost?: boolean; // allow a temporary negative offset during drying (Tado), default true
   coil_dry?: "inherit" | "on" | "off"; // default "inherit"
   coil_dry_minutes?: number; // 0 = inherit global
   coil_dry_mode?: "" | "fan_only" | "dry"; // "" = inherit global
@@ -211,6 +226,7 @@ export interface GlobalSettings {
   mold_notification_cooldown?: number;
   mold_notifications_enabled?: boolean;
   mold_notification_targets?: NotificationTarget[];
+  drying_notification_targets?: NotificationTarget[]; // empty = fall back to the mold targets
   mold_prevention_enabled?: boolean;
   mold_prevention_intensity?: "light" | "medium" | "strong";
   mold_prevention_notify_enabled?: boolean;

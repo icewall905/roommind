@@ -34,7 +34,8 @@
           "preset_mode": {
             "state": {
               "none": "Planification",
-              "manual": "Manuel"
+              "manual": "Manuel",
+              "drying": "Séchage"
             }
           }
         }

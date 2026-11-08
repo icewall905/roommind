@@ -5,7 +5,11 @@ import { localize } from "../utils/localize";
 import { inputStyles } from "../styles/input-styles";
 import { tempUnit, toDisplay, toCelsius, tempStep, tempRange } from "../utils/temperature";
 import {
+  DRYING_DEFAULT_DURATION_H,
+  DRYING_DEFAULT_TARGET,
+  DRYING_DURATIONS_H,
   OVERRIDE_DURATIONS_H,
+  dryingLines,
   isInvalidBand,
   overrideBand,
   overrideSetMessage,
@@ -25,6 +29,7 @@ export class RsOverrideSection extends LitElement {
   @state() private _overridePending: OverrideType | null = null;
   @state() private _overrideCustomHeat = 21;
   @state() private _overrideCustomCool = 24;
+  @state() private _dryingTarget = DRYING_DEFAULT_TARGET;
   @state() private _overrideError = "";
   @state() private _optimisticOverride: {
     type: OverrideType;
@@ -103,6 +108,12 @@ export class RsOverrideSection extends LitElement {
         color: #2196f3;
       }
 
+      .override-preset.active.drying {
+        border-color: #00acc1;
+        background: rgba(0, 172, 193, 0.15);
+        color: #00acc1;
+      }
+
       .override-preset:disabled {
         opacity: 0.35;
         cursor: default;
@@ -160,9 +171,24 @@ export class RsOverrideSection extends LitElement {
         border-color: rgba(3, 169, 244, 0.4);
       }
 
+      .override-dur-chip.default {
+        border-color: var(--primary-color);
+      }
+
       .override-dur-chip:disabled {
         opacity: 0.5;
         pointer-events: none;
+      }
+
+      .drying-status {
+        margin-top: 10px;
+        font-size: 13px;
+        color: var(--secondary-text-color);
+      }
+
+      .drying-status .drying-main {
+        color: var(--primary-text-color);
+        font-weight: 500;
       }
 
       .override-error {
@@ -240,7 +266,14 @@ export class RsOverrideSection extends LitElement {
 
     return html`
       <div class="override-presets">
-        ${(["boost", "eco", "custom"] as OverrideType[]).map((t) => {
+        ${(
+          [
+            "boost",
+            "eco",
+            "custom",
+            ...(this.climateMode === "cool_only" ? [] : ["drying"]),
+          ] as OverrideType[]
+        ).map((t) => {
           const isActive = activeType === t;
           const isDisabled = activeType !== null && !isActive;
           const isPending = !activeType && this._overridePending === t;
@@ -252,32 +285,51 @@ export class RsOverrideSection extends LitElement {
               @click=${() => (isActive ? this._onClearOverride() : this._onOverridePreset(t))}
             >
               <ha-icon
-                icon=${t === "boost" ? "mdi:fire" : t === "eco" ? "mdi:leaf" : "mdi:thermometer"}
+                icon=${
+                  t === "boost"
+                    ? "mdi:fire"
+                    : t === "eco"
+                      ? "mdi:leaf"
+                      : t === "drying"
+                        ? "mdi:tumble-dryer"
+                        : "mdi:thermometer"
+                }
               ></ha-icon>
               ${
                 t === "boost"
                   ? localize("override.comfort", this.language)
                   : t === "eco"
                     ? localize("override.eco", this.language)
-                    : localize("override.custom", this.language)
+                    : t === "drying"
+                      ? localize("override.drying", this.language)
+                      : localize("override.custom", this.language)
               }
             </button>
           `;
         })}
       </div>
+      ${activeType === "drying" ? this._renderDryingStatus() : nothing}
       ${
         showDuration
           ? html`
               ${this._overridePending === "custom" ? this._renderCustomInputs() : nothing}
+              ${this._overridePending === "drying" ? this._renderDryingInput() : nothing}
               <div class="override-duration">
                 <span class="override-duration-label"
                   >${localize("override.activate_for", this.language)}</span
                 >
                 <div class="override-dur-chips">
-                  ${OVERRIDE_DURATIONS_H.map(
+                  ${(this._overridePending === "drying"
+                    ? DRYING_DURATIONS_H
+                    : OVERRIDE_DURATIONS_H
+                  ).map(
                     (hours) => html`
                       <button
-                        class="override-dur-chip"
+                        class="override-dur-chip ${
+                          this._overridePending === "drying" && hours === DRYING_DEFAULT_DURATION_H
+                            ? "default"
+                            : ""
+                        }"
                         @click=${() => this._onOverrideActivate(hours)}
                       >
                         ${hours}h
@@ -290,6 +342,39 @@ export class RsOverrideSection extends LitElement {
           : nothing
       }
     `;
+  }
+
+  private _renderDryingStatus() {
+    const lines = dryingLines(this.config?.live, this.language);
+    if (!lines.length) return nothing;
+    return html`<div class="drying-status">
+      ${lines.map((line, i) => html`<div class=${i === 0 ? "drying-main" : ""}>${line}</div>`)}
+    </div>`;
+  }
+
+  private _renderDryingInput() {
+    const range = tempRange(5, 35, this.hass);
+    return html`
+      <ha-textfield
+        class="override-target"
+        type="number"
+        .label=${localize("override.drying_target", this.language)}
+        .suffix=${tempUnit(this.hass)}
+        min=${range.min}
+        max=${range.max}
+        step=${tempStep(this.hass)}
+        .value=${String(toDisplay(this._dryingTarget, this.hass))}
+        @input=${this._onDryingTargetInput}
+      ></ha-textfield>
+    `;
+  }
+
+  private _onDryingTargetInput(e: Event): void {
+    const v = toCelsius(
+      Number((e.target as HTMLInputElement).value) || toDisplay(DRYING_DEFAULT_TARGET, this.hass),
+      this.hass,
+    );
+    this._dryingTarget = Math.min(35, Math.max(5, v));
   }
 
   private _renderCustomInputs() {
@@ -336,6 +421,7 @@ export class RsOverrideSection extends LitElement {
       this._overridePending = null;
     } else {
       this._overridePending = type;
+      if (type === "drying") this._dryingTarget = DRYING_DEFAULT_TARGET;
       if (type === "custom") {
         this._overrideCustomHeat = this.comfortHeat;
         this._overrideCustomCool = this.comfortCool;
@@ -373,6 +459,7 @@ export class RsOverrideSection extends LitElement {
         ecoCool: this.ecoCool,
       },
       custom,
+      this._dryingTarget,
     );
     if (isInvalidBand(heat, cool)) {
       this._overrideError = localize("override.invalid_band", this.language);
@@ -393,6 +480,7 @@ export class RsOverrideSection extends LitElement {
       hours,
       this.climateMode,
       custom,
+      this._dryingTarget,
     );
     try {
       await this.hass.callWS(msg);

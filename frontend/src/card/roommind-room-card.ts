@@ -7,7 +7,11 @@ import { modeStyles } from "../styles/shared-mode-styles";
 import { formatTemp, tempUnit, toCelsius, toDisplay, usesFahrenheit } from "../utils/temperature";
 import { MAX_TARGET_TEMP_C, MIN_TARGET_TEMP_C } from "../utils/temperature";
 import {
+  DRYING_DEFAULT_DURATION_H,
+  DRYING_DEFAULT_TARGET,
+  DRYING_DURATIONS_H,
   OVERRIDE_DURATIONS_H,
+  dryingLines,
   formatRemaining,
   isInvalidBand,
   overrideBand,
@@ -37,6 +41,7 @@ const OVERRIDE_PRESETS: { type: OverrideType; icon: string; key: TranslationKey 
   { type: "boost", icon: "mdi:sofa", key: "override.comfort" },
   { type: "eco", icon: "mdi:leaf", key: "override.eco" },
   { type: "custom", icon: "mdi:thermometer", key: "override.custom" },
+  { type: "drying", icon: "mdi:tumble-dryer", key: "override.drying" },
 ];
 
 const CLIMATE_MODES: { value: ClimateMode; icon: string; key: TranslationKey }[] = [
@@ -59,6 +64,7 @@ export class RoomMindRoomCard extends LitElement {
   @state() private _feedError = "";
   @state() private _now = Date.now() / 1000;
   @state() private _pending: OverrideType | null = null;
+  @state() private _dryingTarget = DRYING_DEFAULT_TARGET;
   @state() private _customHeat = 21;
   @state() private _customCool = 24;
   @state() private _optimisticOverride: OverrideView | null = null;
@@ -408,10 +414,20 @@ export class RoomMindRoomCard extends LitElement {
                 aria-hidden="true"
               ></ha-icon>
               <span
-                >${localize(OVERRIDE_PRESETS.find((p) => p.type === ov.type)!.key, l)} ·
-                ${remaining}</span
+                >${
+                  ov.type === "drying" && !paused && live.drying
+                    ? dryingLines(live, l)[0]
+                    : `${localize(OVERRIDE_PRESETS.find((p) => p.type === ov.type)!.key, l)} · ${remaining}`
+                }</span
               >
             </div>`
+          : nothing
+      }
+      ${
+        ov.type === "drying" && !paused
+          ? dryingLines(live, l)
+              .slice(1)
+              .map((line) => html`<div class="hint drying-hint">${line}</div>`)
           : nothing
       }
       ${controlled ? nothing : html`<div class="hint">${localize("card.not_controlled", l)}</div>`}
@@ -422,11 +438,14 @@ export class RoomMindRoomCard extends LitElement {
     const l = this._lang;
     const active = this._override(room).type;
     const climateMode = this._climateMode(room);
+    const presets = OVERRIDE_PRESETS.filter(
+      (p) => p.type !== "drying" || climateMode !== "cool_only",
+    );
     return html`
       <section class="override-section ${!active && this._pending ? "expanded" : ""}">
         <h4>${localize("override.label", l)}</h4>
-        <div class="segments">
-          ${OVERRIDE_PRESETS.map(
+        <div class="segments" style="--seg-count: ${presets.length}">
+          ${presets.map(
             (p) => html`
               <button
                 class="segment ${p.type} ${active === p.type ? "active" : ""} ${
@@ -479,11 +498,27 @@ export class RoomMindRoomCard extends LitElement {
                       </div>`
                     : nothing
                 }
+                ${
+                  this._pending === "drying"
+                    ? html`<div class="custom-row">
+                        ${this._customField("override.drying_target", this._dryingTarget, (v) => {
+                          this._dryingTarget = v;
+                        })}
+                      </div>`
+                    : nothing
+                }
                 <div class="duration">
                   <span>${localize("override.activate_for", l)}</span>
-                  ${OVERRIDE_DURATIONS_H.map(
+                  ${(this._pending === "drying" ? DRYING_DURATIONS_H : OVERRIDE_DURATIONS_H).map(
                     (hours) =>
-                      html`<button class="chip" @click=${() => this._activate(room, hours)}>
+                      html`<button
+                        class="chip ${
+                          this._pending === "drying" && hours === DRYING_DEFAULT_DURATION_H
+                            ? "default"
+                            : ""
+                        }"
+                        @click=${() => this._activate(room, hours)}
+                      >
                         ${hours}h
                       </button>`,
                   )}
@@ -677,6 +712,7 @@ export class RoomMindRoomCard extends LitElement {
       return;
     }
     this._pending = type;
+    if (type === "drying") this._dryingTarget = DRYING_DEFAULT_TARGET;
     if (type === "custom") {
       const t = this._temps(room);
       this._customHeat = t.comfortHeat;
@@ -689,7 +725,7 @@ export class RoomMindRoomCard extends LitElement {
     if (!type) return;
     const mode = this._climateMode(room);
     const custom = { heat: this._customHeat, cool: this._customCool };
-    const band = overrideBand(type, mode, this._temps(room), custom);
+    const band = overrideBand(type, mode, this._temps(room), custom, this._dryingTarget);
     if (isInvalidBand(band.heat, band.cool)) {
       this._error = localize("override.invalid_band", this._lang);
       return;
@@ -705,7 +741,9 @@ export class RoomMindRoomCard extends LitElement {
         clearTimeout(this._tempsTimer);
         await this._saveTemps();
       }
-      await this.hass.callWS(overrideSetMessage(room.area_id, type, hours, mode, custom));
+      await this.hass.callWS(
+        overrideSetMessage(room.area_id, type, hours, mode, custom, this._dryingTarget),
+      );
       await refreshRooms(true);
     } catch (err) {
       this._error = this._message(err, "override.error_set");
@@ -955,6 +993,11 @@ export class RoomMindRoomCard extends LitElement {
         background: rgba(76, 175, 80, 0.12);
       }
 
+      .override-status.drying {
+        color: #00acc1;
+        background: rgba(0, 172, 193, 0.12);
+      }
+
       .override-status.custom {
         color: var(--info-color, #2196f3);
         background: rgba(33, 150, 243, 0.12);
@@ -1023,7 +1066,7 @@ export class RoomMindRoomCard extends LitElement {
 
       .segments {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(var(--seg-count, 3), minmax(0, 1fr));
         gap: 8px;
       }
 
@@ -1134,6 +1177,10 @@ export class RoomMindRoomCard extends LitElement {
         font-size: 14px;
         font-weight: 500;
         cursor: pointer;
+      }
+
+      .chip.default {
+        border-color: var(--primary-color);
       }
 
       .chip:hover {
@@ -1399,7 +1446,7 @@ export class RoomMindRoomCard extends LitElement {
       }
 
       .compact .segments {
-        grid-template-columns: repeat(3, 44px);
+        grid-template-columns: repeat(var(--seg-count, 3), 44px);
         gap: 6px;
       }
 

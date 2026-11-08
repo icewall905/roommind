@@ -11,6 +11,7 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
 from .const import (
+    CLIMATE_MODE_COOL_ONLY,
     CLIMATE_MODES,
     CONFLICT_RESOLUTIONS,
     CONTROL_MODE_BANGBANG,
@@ -20,8 +21,14 @@ from .const import (
     DEFAULT_CONFLICT_RESOLUTION,
     DEFAULT_CONTROL_MODE,
     DOMAIN,
+    DRYING_DEFAULT_TARGET,
+    DRYING_MAX_HOURS_DEFAULT,
+    DRYING_MAX_HOURS_LIMIT,
+    MAX_TARGET_TEMP,
     MIN_OCCUPANCY_ECO_DELAY_MINUTES,
+    MIN_TARGET_TEMP,
     OVERRIDE_CUSTOM,
+    OVERRIDE_DRYING,
     OVERRIDE_TYPES,
     build_override_live,
     is_override_suppressed,
@@ -196,6 +203,7 @@ _SETTINGS_SAVE_FIELDS = (
     "mold_notification_cooldown",
     "mold_notifications_enabled",
     "mold_notification_targets",
+    "drying_notification_targets",
     "mold_prevention_enabled",
     "mold_prevention_intensity",
     "mold_prevention_notify_enabled",
@@ -317,6 +325,7 @@ async def websocket_list_rooms(
             "mold_surface_temp": live.get("mold_surface_temp"),
             "mold_prevention_active": live.get("mold_prevention_active", False),
             "mold_prevention_delta": live.get("mold_prevention_delta", 0),
+            "drying": live.get("drying"),
             "n_observations": live.get("n_observations", 0),
             "blind_position": live.get("blind_position"),
             "cover_auto_paused": live.get("cover_auto_paused", False),
@@ -413,6 +422,8 @@ async def websocket_list_rooms(
                     vol.Optional("valve_closing_entity"): _number_entity_or_empty,
                     # No default: devices without it keep their stored form (#482)
                     vol.Optional("valve_closing_mode"): vol.In(VALVE_CLOSING_MODES),
+                    # No default: missing means allowed (offset boost during drying mode)
+                    vol.Optional("drying_offset_boost"): bool,
                 },
                 _validate_device_idle_action,
                 _validate_device_coil_dry,
@@ -627,7 +638,7 @@ async def async_resume_room(hass: HomeAssistant, area_id: str) -> None:
         vol.Required("override_type"): vol.In(OVERRIDE_TYPES),
         vol.Optional("heat"): vol.Coerce(float),
         vol.Optional("cool"): vol.Coerce(float),
-        vol.Optional("duration"): vol.Coerce(float),  # hours (omit or 0 for permanent)
+        vol.Optional("duration"): vol.Coerce(float),  # hours (omit or 0 for permanent; drying: its maximum)
     }
 )
 @websocket_api.async_response
@@ -647,7 +658,20 @@ async def websocket_override_set(
         connection.send_error(msg["id"], "not_found", f"Room '{area_id}' not found")
         return
 
-    if override_type == OVERRIDE_CUSTOM:
+    climate_mode = room.get("climate_mode", "auto")
+    if override_type == OVERRIDE_DRYING:
+        # Heat-only, and never permanent: the run's maximum duration is its backstop
+        if climate_mode == CLIMATE_MODE_COOL_ONLY:
+            connection.send_error(msg["id"], "invalid", "Drying needs a room that can heat")
+            return
+        heat = msg.get("heat", DRYING_DEFAULT_TARGET)
+        cool = None
+        if not duration_hours or duration_hours <= 0:
+            duration_hours = DRYING_MAX_HOURS_DEFAULT
+        if duration_hours > DRYING_MAX_HOURS_LIMIT:
+            connection.send_error(msg["id"], "invalid", f"Drying lasts at most {DRYING_MAX_HOURS_LIMIT} hours")
+            return
+    elif override_type == OVERRIDE_CUSTOM:
         heat = msg.get("heat")
         cool = msg.get("cool")
         if heat is None and cool is None:
@@ -656,7 +680,15 @@ async def websocket_override_set(
     else:
         heat, cool = override_preset_band(room, override_type)
 
-    heat, cool = mask_override_band(heat, cool, room.get("climate_mode", "auto"))
+    # Preset bands come from the room's own config; only caller-given temperatures are checked
+    for value in (heat, cool) if override_type in (OVERRIDE_CUSTOM, OVERRIDE_DRYING) else ():
+        if value is not None and not MIN_TARGET_TEMP <= value <= MAX_TARGET_TEMP:
+            connection.send_error(
+                msg["id"], "invalid", f"Override temperatures must be within {MIN_TARGET_TEMP}-{MAX_TARGET_TEMP} °C"
+            )
+            return
+
+    heat, cool = mask_override_band(heat, cool, climate_mode)
 
     if heat is not None and cool is not None and cool < heat:
         connection.send_error(msg["id"], "invalid", "Cooling target must be >= heating target")
@@ -785,6 +817,13 @@ async def websocket_get_settings(
         vol.Optional("mold_notification_cooldown"): vol.All(vol.Coerce(int), vol.Range(min=10, max=1440)),
         vol.Optional("mold_notifications_enabled"): bool,
         vol.Optional("mold_notification_targets"): [
+            {
+                vol.Required("entity_id"): str,
+                vol.Optional("person_entity", default=""): str,
+                vol.Optional("notify_when", default="always"): vol.In(["always", "home_only"]),
+            }
+        ],
+        vol.Optional("drying_notification_targets"): [
             {
                 vol.Required("entity_id"): str,
                 vol.Optional("person_entity", default=""): str,

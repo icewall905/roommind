@@ -1066,6 +1066,21 @@ export class RsDeviceSection extends LitElement {
           : nothing
       }
       ${
+        isThermostat
+          ? html`
+              <div class="detail-field">
+                <rs-toggle-row
+                  .label=${localize("devices.drying_offset_boost", lang)}
+                  .hint=${localize("devices.drying_offset_boost_hint", lang)}
+                  .checked=${device.drying_offset_boost ?? true}
+                  @toggle-changed=${(e: CustomEvent<boolean>) =>
+                    this._onDryingOffsetBoostChange(entityId, e.detail)}
+                ></rs-toggle-row>
+              </div>
+            `
+          : nothing
+      }
+      ${
         isThermostat && this.valveProtectionEnabled
           ? html`
               <div class="detail-toggle-row">
@@ -1279,6 +1294,14 @@ export class RsDeviceSection extends LitElement {
       d.entity_id === entityId ? { ...d, setpoint_mode: mode as "proportional" | "direct" } : d,
     );
     this._fireDeviceChanged(newDevices);
+  }
+
+  private _onDryingOffsetBoostChange(entityId: string, enabled: boolean): void {
+    this._fireDeviceChanged(
+      this.devices.map((d) =>
+        d.entity_id === entityId ? { ...d, drying_offset_boost: enabled } : d,
+      ),
+    );
   }
 
   private _onSetpointOffsetChange(entityId: string, displayValue: number): void {

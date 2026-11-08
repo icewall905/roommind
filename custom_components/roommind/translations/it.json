@@ -34,7 +34,8 @@
           "preset_mode": {
             "state": {
               "none": "Programma",
-              "manual": "Manuale"
+              "manual": "Manuale",
+              "drying": "Asciugatura"
             }
           }
         }

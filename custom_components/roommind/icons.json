@@ -9,7 +9,8 @@
               "none": "mdi:calendar-clock",
               "comfort": "mdi:sofa",
               "eco": "mdi:leaf",
-              "manual": "mdi:hand-back-right"
+              "manual": "mdi:hand-back-right",
+              "drying": "mdi:hanger"
             }
           }
         }

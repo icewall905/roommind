@@ -68,6 +68,7 @@ export class RsSettings extends LitElement {
   @state() private _moldNotificationCooldown = 60;
   @state() private _moldNotificationsEnabled = true;
   @state() private _moldNotificationTargets: NotificationTarget[] = [];
+  @state() private _dryingNotificationTargets: NotificationTarget[] = [];
   @state() private _moldPreventionEnabled = false;
   @state() private _moldPreventionIntensity: "light" | "medium" | "strong" = "medium";
   @state() private _moldPreventionNotify = false;
@@ -136,6 +137,7 @@ export class RsSettings extends LitElement {
       this._moldNotificationCooldown = s.mold_notification_cooldown ?? 60;
       this._moldNotificationsEnabled = s.mold_notifications_enabled ?? true;
       this._moldNotificationTargets = s.mold_notification_targets ?? [];
+      this._dryingNotificationTargets = s.drying_notification_targets ?? [];
       this._moldPreventionEnabled = s.mold_prevention_enabled ?? false;
       this._moldPreventionIntensity = s.mold_prevention_intensity ?? "medium";
       this._moldPreventionNotify = s.mold_prevention_notify_enabled ?? false;
@@ -337,6 +339,7 @@ export class RsSettings extends LitElement {
           .hass=${this.hass}
           .notificationsEnabled=${this._moldNotificationsEnabled}
           .notificationTargets=${this._moldNotificationTargets}
+          .dryingNotificationTargets=${this._dryingNotificationTargets}
           .notificationCooldown=${this._moldNotificationCooldown}
           .moldPreventionEnabled=${this._moldPreventionEnabled}
           .moldPreventionNotify=${this._moldPreventionNotify}
@@ -460,6 +463,7 @@ export class RsSettings extends LitElement {
         mold_notification_cooldown: this._moldNotificationCooldown,
         mold_notifications_enabled: this._moldNotificationsEnabled,
         mold_notification_targets: this._moldNotificationTargets.filter((t) => t.entity_id),
+        drying_notification_targets: this._dryingNotificationTargets.filter((t) => t.entity_id),
         mold_prevention_enabled: this._moldPreventionEnabled,
         mold_prevention_intensity: this._moldPreventionIntensity,
         mold_prevention_notify_enabled: this._moldPreventionNotify,

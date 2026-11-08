@@ -34,7 +34,8 @@
           "preset_mode": {
             "state": {
               "none": "Zeitplan",
-              "manual": "Manuell"
+              "manual": "Manuell",
+              "drying": "Trocknen"
             }
           }
         }

@@ -37,12 +37,15 @@ from .const import (
     DEFAULT_COMFORT_COOL,
     DEFAULT_COMFORT_HEAT,
     DOMAIN,
+    DRYING_DEFAULT_TARGET,
+    DRYING_MAX_HOURS_DEFAULT,
     MAX_TARGET_TEMP,
     MIN_TARGET_TEMP,
     MODE_COOLING,
     MODE_HEATING,
     OVERRIDE_BOOST,
     OVERRIDE_CUSTOM,
+    OVERRIDE_DRYING,
     OVERRIDE_ECO,
     OVERRIDE_TURN_ON_REFRESH_DELAY_S,
     is_override_active,
@@ -50,6 +53,7 @@ from .const import (
 from .control.mpc_controller import check_acs_can_heat
 from .coordinator import RoomMindCoordinator, _get_area_name
 from .deprecation import warn_deprecated_use
+from .managers.drying_manager import is_drying_active
 from .utils.area_utils import rooms_with_area
 from .utils.device_utils import get_ac_eids, get_trv_eids
 from .utils.schedule_utils import band_in_force, mask_override_band, next_schedule_change, override_preset_band
@@ -62,10 +66,13 @@ _CLIMATE_MODE_TO_HVAC = {
 _HVAC_TO_CLIMATE_MODE = {hvac: mode for mode, hvac in _CLIMATE_MODE_TO_HVAC.items()}
 # A held temperature from the slider, a display or a voice assistant
 PRESET_MANUAL = "manual"
+# A drying run (laundry): high heat-only target for a bounded time, ends by itself once the room is dry
+PRESET_DRYING = "drying"
 _OVERRIDE_TO_PRESET: dict[str, str] = {
     OVERRIDE_BOOST: PRESET_COMFORT,
     OVERRIDE_ECO: PRESET_ECO,
     OVERRIDE_CUSTOM: PRESET_MANUAL,
+    OVERRIDE_DRYING: PRESET_DRYING,
 }
 _PRESET_TO_OVERRIDE: dict[str, str] = {PRESET_COMFORT: OVERRIDE_BOOST, PRESET_ECO: OVERRIDE_ECO}
 
@@ -355,7 +362,7 @@ class RoomMindRoomClimate(CoordinatorEntity, ClimateEntity):
     _attr_min_temp = MIN_TARGET_TEMP
     _attr_max_temp = MAX_TARGET_TEMP
     _attr_translation_key = "room"
-    _attr_preset_modes = [PRESET_NONE, PRESET_COMFORT, PRESET_ECO, PRESET_MANUAL]
+    _attr_preset_modes = [PRESET_NONE, PRESET_COMFORT, PRESET_ECO, PRESET_MANUAL, PRESET_DRYING]
 
     def __init__(self, coordinator: RoomMindCoordinator, area_id: str) -> None:
         super().__init__(coordinator)
@@ -517,6 +524,13 @@ class RoomMindRoomClimate(CoordinatorEntity, ClimateEntity):
     target_temperature_high = native_target_temperature_high
 
     @property
+    def preset_modes(self) -> list[str] | None:
+        if self._climate_mode() == CLIMATE_MODE_COOL_ONLY:
+            # Drying heats; a cooling-only room cannot run it
+            return [p for p in self._attr_preset_modes or [] if p != PRESET_DRYING]
+        return self._attr_preset_modes
+
+    @property
     def preset_mode(self) -> str | None:
         if not self._override_in_force():
             return str(PRESET_NONE)
@@ -599,6 +613,9 @@ class RoomMindRoomClimate(CoordinatorEntity, ClimateEntity):
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Comfort/eco hold until the next schedule change, manual holds the band in force, none returns to the schedule."""
+        if preset_mode == PRESET_DRYING:
+            await self._async_start_drying()
+            return
         if preset_mode == PRESET_MANUAL:
             heat, cool = self._band()
             if self.preset_mode != PRESET_MANUAL and (heat is not None or cool is not None):
@@ -616,11 +633,38 @@ class RoomMindRoomClimate(CoordinatorEntity, ClimateEntity):
         self.async_write_ha_state()
         await self.coordinator.async_request_refresh()
 
+    async def _async_start_drying(self) -> None:
+        """Start a drying run with the defaults; one already running keeps going unchanged."""
+        if self._climate_mode() == CLIMATE_MODE_COOL_ONLY:
+            raise ServiceValidationError(f"{self.entity_id} cannot dry: the room only cools")
+        room = self._room()
+        if is_drying_active(room):
+            return
+        await self._store().async_update_room(
+            self._area_id,
+            {
+                "override_heat": DRYING_DEFAULT_TARGET,
+                "override_cool": None,
+                "override_until": time.time() + DRYING_MAX_HOURS_DEFAULT * 3600,
+                "override_type": OVERRIDE_DRYING,
+            },
+        )
+        self.coordinator.clear_override_seed(self._area_id)
+        self.async_write_ha_state()
+        await self.coordinator.async_request_refresh()
+
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Off switches the room's devices off and stops control; heat/cool/heat_cool pick the climate mode."""
         if self._room().get("is_outdoor", False):
             return
         if hvac_mode == HVACMode.OFF:
+            room = self._room()
+            if is_drying_active(room):
+                # Off ends a drying run (its offsets are restored by the next cycle)
+                await self._store().async_update_room(
+                    self._area_id,
+                    {"override_heat": None, "override_cool": None, "override_until": None, "override_type": None},
+                )
             await self.coordinator.async_turn_room_off(self._area_id)
             self.async_write_ha_state()
             return

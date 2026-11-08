@@ -642,5 +642,17 @@
   "roomcard.editor.hide_climate_control": "Nascondi interruttore del controllo climatizzazione",
   "roomcard.editor.hide_temperatures": "Nascondi temperature comfort ed eco",
   "roomcard.paused": "in pausa",
-  "roomcard.editor.compact": "Visualizzazione compatta"
+  "roomcard.editor.compact": "Visualizzazione compatta",
+  "override.drying": "Asciugatura",
+  "override.drying_target": "Asciuga a:",
+  "drying.label": "Asciugatura",
+  "drying.ends_by": "termina entro le {time}",
+  "drying.no_humidity": "Nessun sensore di umidità: l'asciugatura dura solo il tempo impostato.",
+  "drying.vent_hint": "Apri la finestra per ~10 min",
+  "drying.offset_boost_active": "Boost con offset del TRV attivo",
+  "notifications.drying_targets": "Notifiche di asciugatura",
+  "notifications.drying_targets_hint": "Se vuoto, usa i destinatari della muffa",
+  "notifications.drying_add_target_label": "Aggiungi dispositivo per le notifiche di asciugatura",
+  "devices.drying_offset_boost": "Consenti il boost con offset di temperatura durante l'asciugatura",
+  "devices.drying_offset_boost_hint": "Consente a RoomMind di applicare temporaneamente un offset di temperatura negativo così il termostato scalda oltre il proprio massimo durante l'asciugatura. Al momento agisce solo sui dispositivi Tado."
 }

@@ -44,6 +44,24 @@ def dew_point(temp: float, rh: float) -> float:
     return (_B * gamma) / (_A - gamma)
 
 
+def absolute_humidity(temp: float, rh: float) -> float:
+    """Calculate the absolute humidity of air (water vapour density).
+
+    Uses the Magnus saturation vapour pressure and the ideal gas law for water
+    vapour (216.7 g·K/(m³·hPa)).
+
+    Args:
+        temp: Air temperature in °C.
+        rh: Relative humidity in % (clamped to 0-100).
+
+    Returns:
+        Absolute humidity in g/m³.
+    """
+    rh_clamped = max(0.0, min(rh, 100.0))
+    saturation_hpa = 6.112 * math.exp((_A * temp) / (_B + temp))
+    return 216.7 * (rh_clamped / 100.0) * saturation_hpa / (273.15 + temp)
+
+
 def surface_rh(t_dew: float, t_surface: float) -> float:
     """Calculate relative humidity at a surface.
 

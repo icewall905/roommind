@@ -7,7 +7,7 @@ from homeassistant.const import Platform
 from homeassistant.core import Context
 
 DOMAIN = "roommind"
-VERSION = "1.8.2"
+VERSION = "1.8.3-drying.1"
 
 # Platforms
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH, Platform.BINARY_SENSOR, Platform.CLIMATE]
@@ -22,7 +22,8 @@ CLIMATE_MODES = [CLIMATE_MODE_AUTO, CLIMATE_MODE_HEAT_ONLY, CLIMATE_MODE_COOL_ON
 OVERRIDE_BOOST = "boost"
 OVERRIDE_ECO = "eco"
 OVERRIDE_CUSTOM = "custom"
-OVERRIDE_TYPES = [OVERRIDE_BOOST, OVERRIDE_ECO, OVERRIDE_CUSTOM]
+OVERRIDE_DRYING = "drying"
+OVERRIDE_TYPES = [OVERRIDE_BOOST, OVERRIDE_ECO, OVERRIDE_CUSTOM, OVERRIDE_DRYING]
 # Grace period after the override entity is switched on before the seeded
 # override is evaluated; the caller's real targets normally arrive within it (#447).
 OVERRIDE_TURN_ON_REFRESH_DELAY_S = 3.0
@@ -155,6 +156,27 @@ MOLD_PREVENTION_DELTAS = {"light": 1.0, "medium": 2.0, "strong": 3.0}
 MOLD_HYSTERESIS = 5.0  # surface RH must drop this much below warning to clear
 MIN_MOLD_GROWTH_TEMP = 5.0  # °C — below this surface temp, mold risk negligible
 DEFAULT_MOLD_F_RSI = 0.80  # DIN 4108-2 temperature factor; realistic for standard existing buildings
+
+# Drying mode (laundry dried indoors): a heat-only override run that ends once the room air stops taking up water
+DRYING_DEFAULT_TARGET = 30.0  # °C heating target of a drying run
+DRYING_MAX_HOURS_DEFAULT = 8  # hours; a drying run always ends at the latest after this (never permanent)
+DRYING_MAX_HOURS_LIMIT = 24  # hours; longest maximum duration a drying run accepts
+DRYING_VENT_AH_RISE = 2.0  # g/m³ above the start's absolute humidity before a short airing is suggested
+DRYING_VENT_MIN_RH = 60.0  # % relative humidity below which airing is not suggested
+DRYING_VENT_PROMPT_COOLDOWN_S = 45 * 60  # minimum time between two airing suggestions
+DRYING_DONE_MIN_RUNTIME_S = 2 * 3600  # a run is never declared done before this
+DRYING_DONE_FLAT_WINDOW_S = 30 * 60  # absolute humidity must not have risen over this span
+DRYING_DONE_AH_MARGIN = 0.5  # g/m³ above the start's absolute humidity still counting as dry
+DRYING_DONE_RISE_TOLERANCE = 0.1  # g/m³ rise over the flat window still counting as non-rising (sensor noise)
+DRYING_AH_EMA_ALPHA = 0.2  # EMA weight per 30 s reading for the absolute humidity
+DRYING_AH_HISTORY_S = 2 * 3600  # how much absolute-humidity history is kept per run
+DRYING_OFFSET_MARGIN = 2.0  # K beyond the device cap the temperature offset adds
+DRYING_OFFSET_MAX = 10.0  # K; Tado accepts offsets in -10..+10
+DRYING_OFFSET_STEP = 0.5  # offsets are rounded to this
+DRYING_OFFSET_STALE_S = 30 * 60  # after a restore, the device's offset attribute may still show the boost this long
+DRYING_OFFSET_PLATFORMS = ("tado",)  # integrations whose climate entities take a temperature offset
+DRYING_RESTORE_RETRY_S = 600  # a failed offset restore is retried after this long
+DRYING_RESTORE_MAX_ATTEMPTS = 6  # then given up with an error in the log
 
 # Heating system profiles — residual heat modeling per system type
 # tau_minutes: exponential decay time constant of residual heat after heating stops

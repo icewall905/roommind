@@ -642,5 +642,17 @@
   "roomcard.editor.hide_climate_control": "Schalter für die Klimasteuerung ausblenden",
   "roomcard.editor.hide_temperatures": "Komfort- und Eco-Temperaturen ausblenden",
   "roomcard.paused": "pausiert",
-  "roomcard.editor.compact": "Kompakte Darstellung"
+  "roomcard.editor.compact": "Kompakte Darstellung",
+  "override.drying": "Trocknen",
+  "override.drying_target": "Trocknen bei:",
+  "drying.label": "Trocknen",
+  "drying.ends_by": "endet um {time}",
+  "drying.no_humidity": "Kein Feuchtesensor: Das Trocknen läuft nur für die eingestellte Dauer.",
+  "drying.vent_hint": "Fenster ca. 10 Min. öffnen",
+  "drying.offset_boost_active": "Thermostat-Offset-Boost aktiv",
+  "notifications.drying_targets": "Trocknungs-Benachrichtigungen",
+  "notifications.drying_targets_hint": "Fällt auf die Schimmel-Ziele zurück, wenn leer",
+  "notifications.drying_add_target_label": "Gerät für Trocknungs-Benachrichtigungen hinzufügen",
+  "devices.drying_offset_boost": "Temperatur-Offset-Boost beim Trocknen erlauben",
+  "devices.drying_offset_boost_hint": "Erlaubt RoomMind, vorübergehend einen negativen Temperatur-Offset anzuwenden, damit das Thermostat beim Trocknen über sein eigenes Maximum hinaus heizt. Wirkt derzeit nur bei Tado-Geräten."
 }

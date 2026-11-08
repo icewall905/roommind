@@ -642,5 +642,17 @@
   "roomcard.editor.hide_climate_control": "Masquer l'interrupteur du contrôle climatique",
   "roomcard.editor.hide_temperatures": "Masquer les températures confort et éco",
   "roomcard.paused": "en pause",
-  "roomcard.editor.compact": "Affichage compact"
+  "roomcard.editor.compact": "Affichage compact",
+  "override.drying": "Séchage",
+  "override.drying_target": "Sécher à :",
+  "drying.label": "Séchage",
+  "drying.ends_by": "fin vers {time}",
+  "drying.no_humidity": "Pas de capteur d'humidité : le séchage dure uniquement la durée définie.",
+  "drying.vent_hint": "Ouvrez la fenêtre ~10 min",
+  "drying.offset_boost_active": "Boost par décalage du TRV actif",
+  "notifications.drying_targets": "Notifications de séchage",
+  "notifications.drying_targets_hint": "Utilise les cibles moisissure si vide",
+  "notifications.drying_add_target_label": "Ajouter un appareil de notification de séchage",
+  "devices.drying_offset_boost": "Autoriser le boost par décalage de température pendant le séchage",
+  "devices.drying_offset_boost_hint": "Permet à RoomMind d'appliquer temporairement un décalage de température négatif pour que le thermostat chauffe au-delà de son maximum pendant le séchage. N'agit actuellement que sur les appareils Tado."
 }

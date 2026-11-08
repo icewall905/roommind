@@ -9,8 +9,10 @@ import pytest
 
 from custom_components.roommind.utils.notification_utils import (
     NotificationThrottler,
+    async_send_drying_notification,
     async_send_mold_notification,
     dismiss_mold_notification,
+    drying_notification_targets,
 )
 
 # --- NotificationThrottler ---
@@ -280,3 +282,42 @@ async def test_send_notification_service_exception_triggers_fallback():
         )
 
     mock_create.assert_called_once()
+
+
+# --- drying notifications ---
+
+_KEVIN = {"entity_id": "notify.mobile_app_kevin", "person_entity": "", "notify_when": "always"}
+_LISA = {"entity_id": "notify.mobile_app_lisa", "person_entity": "", "notify_when": "always"}
+
+
+def test_drying_targets_fall_back_to_mold_targets():
+    assert drying_notification_targets(
+        {"drying_notification_targets": [_KEVIN], "mold_notification_targets": [_LISA]}
+    ) == [_KEVIN]
+    assert drying_notification_targets({"drying_notification_targets": [], "mold_notification_targets": [_LISA]}) == [
+        _LISA
+    ]
+    assert drying_notification_targets({}) == []
+
+
+@pytest.mark.asyncio
+async def test_send_drying_notification_uses_drying_tag():
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    await async_send_drying_notification(
+        hass, "bedroom", {"drying_notification_targets": [_KEVIN]}, message="Open the window", title="RoomMind: Drying"
+    )
+    hass.services.async_call.assert_called_once()
+    data = hass.services.async_call.call_args[0][2]
+    assert data["entity_id"] == "notify.mobile_app_kevin"
+    assert data["data"]["tag"] == "roommind_drying_bedroom"
+
+
+@pytest.mark.asyncio
+async def test_send_drying_notification_persistent_without_targets():
+    hass = MagicMock()
+    with patch("custom_components.roommind.utils.notification_utils.async_create") as mock_create:
+        await async_send_drying_notification(hass, "bedroom", {}, message="Dry", title="RoomMind: Drying")
+    mock_create.assert_called_once_with(
+        hass, "Dry", title="RoomMind: Drying", notification_id="roommind_drying_bedroom"
+    )

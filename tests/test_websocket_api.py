@@ -3287,3 +3287,181 @@ def test_setback_auto_off_schema_has_no_default():
     assert on["setback_auto_off"] is True
     with pytest.raises(vol.Invalid):
         _validate({"entity_id": "climate.ac", "type": "ac", "setback_auto_off": "yes"})
+
+
+# --- Drying mode (laundry) ---
+
+
+async def _drying_room(ws_hass, connection, area_id="bedroom", **extra):
+    await _save_room(ws_hass, connection, {"id": 2, "type": "roommind/rooms/save", "area_id": area_id, **extra})
+    connection.send_result.reset_mock()
+    connection.send_error.reset_mock()
+
+
+@pytest.mark.asyncio
+async def test_override_set_drying_defaults(ws_hass, store, connection):
+    """Drying without heat/duration: 30 °C heat-only for at most 8 h, cool ignored."""
+    import time
+
+    await store.async_load()
+    await _drying_room(ws_hass, connection)
+    before = time.time()
+    msg = {"id": 3, "type": "roommind/override/set", "area_id": "bedroom", "override_type": "drying", "cool": 24.0}
+    await _override_set(ws_hass, connection, msg)
+
+    connection.send_result.assert_called_once_with(3, {"success": True})
+    room = store.get_room("bedroom")
+    assert room["override_type"] == "drying"
+    assert room["override_heat"] == 30.0
+    assert room["override_cool"] is None
+    assert before + 8 * 3600 <= room["override_until"] <= time.time() + 8 * 3600
+
+
+@pytest.mark.asyncio
+async def test_override_set_drying_with_target_and_duration(ws_hass, store, connection):
+    import time
+
+    await store.async_load()
+    await _drying_room(ws_hass, connection)
+    msg = {
+        "id": 3,
+        "type": "roommind/override/set",
+        "area_id": "bedroom",
+        "override_type": "drying",
+        "heat": 33.5,
+        "duration": 4,
+    }
+    await _override_set(ws_hass, connection, msg)
+
+    room = store.get_room("bedroom")
+    assert room["override_heat"] == 33.5
+    assert room["override_until"] == pytest.approx(time.time() + 4 * 3600, abs=5)
+
+
+@pytest.mark.asyncio
+async def test_override_set_drying_zero_duration_is_bounded(ws_hass, store, connection):
+    await store.async_load()
+    await _drying_room(ws_hass, connection)
+    msg = {"id": 3, "type": "roommind/override/set", "area_id": "bedroom", "override_type": "drying", "duration": 0}
+    await _override_set(ws_hass, connection, msg)
+    assert store.get_room("bedroom")["override_until"] is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("heat", [4.5, 35.5])
+async def test_override_set_drying_rejects_out_of_range(ws_hass, store, connection, heat):
+    await store.async_load()
+    await _drying_room(ws_hass, connection)
+    msg = {"id": 3, "type": "roommind/override/set", "area_id": "bedroom", "override_type": "drying", "heat": heat}
+    await _override_set(ws_hass, connection, msg)
+    connection.send_error.assert_called_once()
+    assert connection.send_error.call_args[0][1] == "invalid"
+    assert store.get_room("bedroom").get("override_type") is None
+
+
+@pytest.mark.asyncio
+async def test_override_set_drying_rejected_in_cool_only_room(ws_hass, store, connection):
+    await store.async_load()
+    await _drying_room(ws_hass, connection, climate_mode="cool_only")
+    msg = {"id": 3, "type": "roommind/override/set", "area_id": "bedroom", "override_type": "drying"}
+    await _override_set(ws_hass, connection, msg)
+    connection.send_error.assert_called_once()
+    assert connection.send_error.call_args[0][1] == "invalid"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("heat", "cool"), [(4.0, None), (None, 36.0), (20.0, 40.0)])
+async def test_override_set_custom_rejects_out_of_range(ws_hass, store, connection, heat, cool):
+    """Custom override temperatures must lie within 5–35 °C."""
+    await store.async_load()
+    await _drying_room(ws_hass, connection, area_id="office")
+    msg = {"id": 3, "type": "roommind/override/set", "area_id": "office", "override_type": "custom"}
+    if heat is not None:
+        msg["heat"] = heat
+    if cool is not None:
+        msg["cool"] = cool
+    await _override_set(ws_hass, connection, msg)
+    connection.send_error.assert_called_once()
+    assert connection.send_error.call_args[0][1] == "invalid"
+
+
+@pytest.mark.asyncio
+async def test_list_rooms_includes_drying(ws_hass, store, connection):
+    """The drying live dict passes the allow-list of the list handler."""
+    await store.async_load()
+    await _drying_room(ws_hass, connection)
+    drying = {"started_at": 1.0, "until": 2.0, "target": 30.0, "vent_suggested": True, "offset_boost": {}}
+    mock_coordinator = MagicMock()
+    mock_coordinator.rooms = {"bedroom": {"current_temp": 24.0, "drying": drying}}
+    mock_coordinator.async_request_refresh = AsyncMock()
+    ws_hass.data[DOMAIN]["coordinator"] = mock_coordinator
+
+    await _list_rooms(ws_hass, connection, {"id": 3, "type": "roommind/rooms/list"})
+    assert connection.send_result.call_args[0][1]["rooms"]["bedroom"]["live"]["drying"] == drying
+
+
+@pytest.mark.asyncio
+async def test_list_rooms_drying_none_without_coordinator_state(ws_hass, store, connection):
+    await store.async_load()
+    await _drying_room(ws_hass, connection)
+    await _list_rooms(ws_hass, connection, {"id": 3, "type": "roommind/rooms/list"})
+    assert connection.send_result.call_args[0][1]["rooms"]["bedroom"]["live"]["drying"] is None
+
+
+def test_drying_offset_boost_device_schema():
+    """Optional per-device bool without default (missing = allowed)."""
+    import voluptuous as vol
+
+    schema = websocket_save_room._ws_schema
+
+    def _validate(device):
+        return schema({"type": "roommind/rooms/save", "id": 1, "area_id": "lr", "devices": [device]})["devices"][0]
+
+    assert "drying_offset_boost" not in _validate({"entity_id": "climate.trv", "type": "trv"})
+    assert (
+        _validate({"entity_id": "climate.trv", "type": "trv", "drying_offset_boost": False})["drying_offset_boost"]
+        is False
+    )
+    with pytest.raises(vol.Invalid):
+        _validate({"entity_id": "climate.trv", "type": "trv", "drying_offset_boost": "maybe"})
+
+
+@pytest.mark.asyncio
+async def test_save_room_persists_drying_offset_boost(ws_hass, store, connection):
+    await store.async_load()
+    device = {"entity_id": "climate.tado", "type": "trv", "drying_offset_boost": False}
+    await _save_room(
+        ws_hass, connection, {"id": 2, "type": "roommind/rooms/save", "area_id": "bed", "devices": [device]}
+    )
+    assert store.get_room("bed")["devices"][0]["drying_offset_boost"] is False
+
+
+@pytest.mark.asyncio
+async def test_save_settings_drying_notification_targets(ws_hass, store, connection):
+    await store.async_load()
+    schema = websocket_save_settings._ws_schema
+    msg = schema(
+        {
+            "id": 5,
+            "type": "roommind/settings/save",
+            "drying_notification_targets": [{"entity_id": "notify.mobile_app_kevin"}],
+        }
+    )
+    await _save_settings(ws_hass, connection, msg)
+    assert store.get_settings()["drying_notification_targets"] == [
+        {"entity_id": "notify.mobile_app_kevin", "person_entity": "", "notify_when": "always"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_override_set_drying_rejects_more_than_24h(ws_hass, store, connection):
+    await store.async_load()
+    await _drying_room(ws_hass, connection)
+    msg = {"id": 3, "type": "roommind/override/set", "area_id": "bedroom", "override_type": "drying", "duration": 25}
+    await _override_set(ws_hass, connection, msg)
+    connection.send_error.assert_called_once()
+    assert connection.send_error.call_args[0][1] == "invalid"
+    msg["duration"] = 24
+    connection.send_error.reset_mock()
+    await _override_set(ws_hass, connection, msg)
+    connection.send_error.assert_not_called()

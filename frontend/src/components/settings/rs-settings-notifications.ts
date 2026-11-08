@@ -14,9 +14,115 @@ export class RsSettingsNotifications extends RsSettingsBase {
   @property({ attribute: false }) public hass!: HomeAssistant;
   @property({ type: Boolean }) public notificationsEnabled = true;
   @property({ type: Array }) public notificationTargets: NotificationTarget[] = [];
+  @property({ type: Array }) public dryingNotificationTargets: NotificationTarget[] = [];
   @property({ type: Number }) public notificationCooldown = 60;
   @property({ type: Boolean }) public moldPreventionEnabled = false;
   @property({ type: Boolean }) public moldPreventionNotify = false;
+
+  private _renderTargets(
+    targets: NotificationTarget[],
+    key: string,
+    addLabelKey: "notifications.add_target_label" | "notifications.drying_add_target_label",
+  ) {
+    const l = this.hass.language;
+    return html`
+      <div class="target-list">
+        ${targets.map((t, idx) => {
+          const name = t.entity_id
+            ? (this.hass.states[t.entity_id]?.attributes?.friendly_name ??
+              t.entity_id.replace("notify.", ""))
+            : localize("notifications.target_unnamed", l);
+          return html`
+            <div class="target-card">
+              <div class="target-header">
+                <ha-icon
+                  icon="mdi:bell"
+                  style="--mdc-icon-size: 18px; color: var(--secondary-text-color)"
+                ></ha-icon>
+                <span>${name}</span>
+                <ha-icon-button
+                  .path=${"M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z"}
+                  @click=${() => {
+                    this._fire(
+                      key,
+                      targets.filter((_, i) => i !== idx),
+                    );
+                  }}
+                ></ha-icon-button>
+              </div>
+              <div class="target-detail">
+                <ha-entity-picker
+                  .hass=${this.hass}
+                  .value=${t.person_entity}
+                  .includeDomains=${["person"]}
+                  .label=${localize("notifications.target_person", l)}
+                  allow-custom-entity
+                  @value-changed=${(e: CustomEvent) => {
+                    const next = [...targets];
+                    next[idx] = {
+                      ...next[idx],
+                      person_entity: (e.detail?.value as string) ?? "",
+                    };
+                    this._fire(key, next);
+                  }}
+                ></ha-entity-picker>
+                <ha-select
+                  .value=${t.notify_when}
+                  .options=${[
+                    {
+                      value: "always",
+                      label: localize("notifications.target_when_always", l),
+                    },
+                    {
+                      value: "home_only",
+                      label: localize("notifications.target_when_home", l),
+                    },
+                  ]}
+                  fixedMenuPosition
+                  @selected=${(e: Event) => {
+                    const v = getSelectValue(e) as "always" | "home_only";
+                    if (!v) return;
+                    const next = [...targets];
+                    next[idx] = { ...next[idx], notify_when: v };
+                    this._fire(key, next);
+                  }}
+                  @closed=${(e: Event) => e.stopPropagation()}
+                >
+                  <ha-list-item value="always"
+                    >${localize("notifications.target_when_always", l)}</ha-list-item
+                  >
+                  <ha-list-item value="home_only"
+                    >${localize("notifications.target_when_home", l)}</ha-list-item
+                  >
+                </ha-select>
+              </div>
+            </div>
+          `;
+        })}
+      </div>
+
+      <div style="margin-top: 8px">
+        <ha-entity-picker
+          .hass=${this.hass}
+          .value=${""}
+          .includeDomains=${["notify"]}
+          .label=${localize(addLabelKey, l)}
+          allow-custom-entity
+          @value-changed=${(e: CustomEvent) => {
+            const v = (e.detail?.value as string) ?? "";
+            if (!v) return;
+            this._fire(key, [
+              ...targets,
+              { entity_id: v, person_entity: "", notify_when: "always" as const },
+            ]);
+            const picker = e.target as HTMLElement & { value?: string };
+            if (picker) picker.value = "";
+          }}
+        ></ha-entity-picker>
+        <span class="field-hint">${localize("notifications.add_target_hint", l)}</span>
+      </div>
+    `;
+  }
 
   render() {
     const l = this.hass.language;
@@ -40,101 +146,11 @@ export class RsSettingsNotifications extends RsSettingsBase {
               <div class="detail-section">
                 <p class="hint">${localize("notifications.desc", l)}</p>
 
-                <div class="target-list">
-                  ${this.notificationTargets.map((t, idx) => {
-                    const name = t.entity_id
-                      ? (this.hass.states[t.entity_id]?.attributes?.friendly_name ??
-                        t.entity_id.replace("notify.", ""))
-                      : localize("notifications.target_unnamed", l);
-                    return html`
-                      <div class="target-card">
-                        <div class="target-header">
-                          <ha-icon
-                            icon="mdi:bell"
-                            style="--mdc-icon-size: 18px; color: var(--secondary-text-color)"
-                          ></ha-icon>
-                          <span>${name}</span>
-                          <ha-icon-button
-                            .path=${"M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z"}
-                            @click=${() => {
-                              this._fire(
-                                "moldNotificationTargets",
-                                this.notificationTargets.filter((_, i) => i !== idx),
-                              );
-                            }}
-                          ></ha-icon-button>
-                        </div>
-                        <div class="target-detail">
-                          <ha-entity-picker
-                            .hass=${this.hass}
-                            .value=${t.person_entity}
-                            .includeDomains=${["person"]}
-                            .label=${localize("notifications.target_person", l)}
-                            allow-custom-entity
-                            @value-changed=${(e: CustomEvent) => {
-                              const targets = [...this.notificationTargets];
-                              targets[idx] = {
-                                ...targets[idx],
-                                person_entity: (e.detail?.value as string) ?? "",
-                              };
-                              this._fire("moldNotificationTargets", targets);
-                            }}
-                          ></ha-entity-picker>
-                          <ha-select
-                            .value=${t.notify_when}
-                            .options=${[
-                              {
-                                value: "always",
-                                label: localize("notifications.target_when_always", l),
-                              },
-                              {
-                                value: "home_only",
-                                label: localize("notifications.target_when_home", l),
-                              },
-                            ]}
-                            fixedMenuPosition
-                            @selected=${(e: Event) => {
-                              const v = getSelectValue(e) as "always" | "home_only";
-                              if (!v) return;
-                              const targets = [...this.notificationTargets];
-                              targets[idx] = { ...targets[idx], notify_when: v };
-                              this._fire("moldNotificationTargets", targets);
-                            }}
-                            @closed=${(e: Event) => e.stopPropagation()}
-                          >
-                            <ha-list-item value="always"
-                              >${localize("notifications.target_when_always", l)}</ha-list-item
-                            >
-                            <ha-list-item value="home_only"
-                              >${localize("notifications.target_when_home", l)}</ha-list-item
-                            >
-                          </ha-select>
-                        </div>
-                      </div>
-                    `;
-                  })}
-                </div>
-
-                <div style="margin-top: 8px">
-                  <ha-entity-picker
-                    .hass=${this.hass}
-                    .value=${""}
-                    .includeDomains=${["notify"]}
-                    .label=${localize("notifications.add_target_label", l)}
-                    allow-custom-entity
-                    @value-changed=${(e: CustomEvent) => {
-                      const v = (e.detail?.value as string) ?? "";
-                      if (!v) return;
-                      this._fire("moldNotificationTargets", [
-                        ...this.notificationTargets,
-                        { entity_id: v, person_entity: "", notify_when: "always" as const },
-                      ]);
-                      const picker = e.target as HTMLElement & { value?: string };
-                      if (picker) picker.value = "";
-                    }}
-                  ></ha-entity-picker>
-                  <span class="field-hint">${localize("notifications.add_target_hint", l)}</span>
-                </div>
+                ${this._renderTargets(
+                  this.notificationTargets,
+                  "moldNotificationTargets",
+                  "notifications.add_target_label",
+                )}
 
                 <div class="threshold-grid" style="margin-top: 12px">
                   <div class="threshold-field">
@@ -154,6 +170,18 @@ export class RsSettingsNotifications extends RsSettingsBase {
                     ></ha-textfield>
                     <span class="field-hint">${localize("notifications.cooldown_hint", l)}</span>
                   </div>
+                </div>
+
+                <div class="drying-targets">
+                  <span class="toggle-label">${localize("notifications.drying_targets", l)}</span>
+                  <span class="field-hint"
+                    >${localize("notifications.drying_targets_hint", l)}</span
+                  >
+                  ${this._renderTargets(
+                    this.dryingNotificationTargets,
+                    "dryingNotificationTargets",
+                    "notifications.drying_add_target_label",
+                  )}
                 </div>
 
                 ${
@@ -204,6 +232,12 @@ export class RsSettingsNotifications extends RsSettingsBase {
         font-size: 12px;
       }
 
+      .drying-targets {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-top: 16px;
+      }
       .target-list {
         display: flex;
         flex-direction: column;
