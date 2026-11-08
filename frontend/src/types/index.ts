@@ -16,7 +16,9 @@ export interface DryingLiveData {
   humidity: number | null;
   abs_humidity: number | null; // g/m³
   baseline_abs_humidity: number | null;
-  vent_suggested: boolean;
+  vent_suggested: boolean; // open prompt sent, window not opened since
+  close_suggested: boolean; // close prompt sent, window still open
+  window_open_since: number | null;
   last_vent_prompt_at: number | null;
   offset_boost: Record<string, number>; // entity_id -> applied temperature offset
 }

@@ -11,7 +11,9 @@ from custom_components.roommind.const import (
     DRYING_DONE_MIN_RUNTIME_S,
     DRYING_RESTORE_MAX_ATTEMPTS,
     DRYING_RESTORE_RETRY_S,
-    DRYING_VENT_PROMPT_COOLDOWN_S,
+    DRYING_VENT_CLOSE_AFTER_S,
+    DRYING_VENT_MAX_OPEN_S,
+    DRYING_VENT_MIN_INTERVAL_S,
 )
 from custom_components.roommind.managers.drying_manager import DryingManager, boost_offset, is_drying_active
 from custom_components.roommind.utils.mold_utils import absolute_humidity
@@ -72,9 +74,9 @@ def _offset_calls(hass):
     ]
 
 
-async def _eval(dm, room, temp=24.0, rh=55.0, window_open=False, now=T0, settings=None):
+async def _eval(dm, room, temp=24.0, rh=55.0, window_open=False, now=T0, settings=None, **kwargs):
     return await dm.async_evaluate(
-        "bedroom", "Bedroom", room, temp, rh, window_open, settings if settings is not None else {}, now=now
+        "bedroom", "Bedroom", room, temp, rh, window_open, settings if settings is not None else {}, now=now, **kwargs
     )
 
 
@@ -113,6 +115,8 @@ async def test_start_applies_tado_offset_once_and_reports_live(env):
         "abs_humidity": round(absolute_humidity(24.0, 55.0), 2),
         "baseline_abs_humidity": round(absolute_humidity(24.0, 55.0), 2),
         "vent_suggested": False,
+        "close_suggested": False,
+        "window_open_since": None,
         "last_vent_prompt_at": None,
         "offset_boost": {TADO: -7.0},
     }
@@ -202,42 +206,231 @@ async def test_expiry_restores_and_notifies(env):
     assert "time limit" in notify.call_args.kwargs["message"]
 
 
+def _messages(notify):
+    return [c.kwargs["message"] for c in notify.call_args_list]
+
+
+async def _humid_until(dm, end, temp=26.0, rh=65.0, start=T0 + 30, step=60, **kwargs):
+    """Closed window, constant humid room air from *start* to *end*; returns the last live dict."""
+    now = start
+    while now < end:
+        await _eval(dm, _room(), temp=temp, rh=rh, now=now, **kwargs)
+        now += step
+    return await _eval(dm, _room(), temp=temp, rh=rh, now=end, **kwargs)
+
+
 @pytest.mark.asyncio
-async def test_vent_prompt_on_moisture_build_up_with_cooldown(env):
+async def test_open_prompt_against_outdoor_air_after_min_interval(env):
+    """Room air 16 g/m³, outdoors 5 °C (~6 g/m³): airing pays off, but only 45 min after the start."""
+    hass, *_ = env
+    dm = DryingManager(hass)
+    out = {"outdoor_temp": 5.0, "outdoor_humidity": 85.0}
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=26.0, rh=65.0, **out)
+        live = await _humid_until(dm, T0 + DRYING_VENT_MIN_INTERVAL_S - 60, **out)
+        notify.assert_not_awaited()
+        assert live["vent_suggested"] is False
+        live = await _eval(dm, _room(), temp=26.0, rh=65.0, now=T0 + DRYING_VENT_MIN_INTERVAL_S, **out)
+    assert _messages(notify) == ["Open the Bedroom window for a few minutes to let the moisture out (65% humidity)."]
+    assert live["vent_suggested"] is True
+    assert live["last_vent_prompt_at"] == T0 + DRYING_VENT_MIN_INTERVAL_S
+
+
+@pytest.mark.asyncio
+async def test_ignored_open_prompt_repeats_at_the_interval(env):
+    hass, *_ = env
+    dm = DryingManager(hass)
+    out = {"outdoor_temp": 5.0}
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=26.0, rh=65.0, **out)
+        await _humid_until(dm, T0 + 2 * DRYING_VENT_MIN_INTERVAL_S - 60, step=300, **out)
+        assert notify.await_count == 1
+        await _eval(dm, _room(), temp=26.0, rh=65.0, now=T0 + 2 * DRYING_VENT_MIN_INTERVAL_S + 60, **out)
+    assert notify.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_no_open_prompt_when_outdoor_air_is_as_moist(env):
+    """Warm humid day: the outdoor air holds about as much water, airing does not help."""
+    hass, *_ = env
+    dm = DryingManager(hass)
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=26.0, rh=65.0, outdoor_temp=24.0, outdoor_humidity=75.0)
+        await _humid_until(dm, T0 + 7000, step=300, outdoor_temp=24.0, outdoor_humidity=75.0)
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_outdoor_rh_fallback_is_conservative(env):
+    """Without outdoor humidity 90 % is assumed: 20 °C outdoors then holds ~15.6 g/m³, too close to 16."""
+    hass, *_ = env
+    dm = DryingManager(hass)
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=26.0, rh=65.0, outdoor_temp=20.0)
+        await _humid_until(dm, T0 + 7000, step=300, outdoor_temp=20.0)
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_without_outdoor_temp_the_start_is_the_reference(env):
     hass, *_ = env
     dm = DryingManager(hass)
     with patch(NOTIFY, new_callable=AsyncMock) as notify:
         await _eval(dm, _room(), temp=26.0, rh=50.0)  # baseline ~12.2 g/m³
-        # Humidity builds up: ~16 g/m³ at 26 °C / 65 %
-        for i in range(1, 15):
-            live = await _eval(dm, _room(), temp=26.0, rh=65.0, now=T0 + 30 * i)
-        assert notify.await_count == 1
-        assert "window" in notify.call_args.kwargs["message"]
-        assert live["vent_suggested"] is True
-        prompt_at = live["last_vent_prompt_at"]
+        await _humid_until(dm, T0 + DRYING_VENT_MIN_INTERVAL_S)  # ~16 g/m³
+    assert notify.await_count == 1
 
-        # Window opens: prompt answered
-        live = await _eval(dm, _room(), temp=26.0, rh=65.0, window_open=True, now=prompt_at + 60)
-        assert live["vent_suggested"] is False
-        # Closed again, still humid, within cooldown: nothing new
-        live = await _eval(dm, _room(), temp=26.0, rh=65.0, now=prompt_at + 600)
-        assert notify.await_count == 1
-        assert live["vent_suggested"] is False
-        # After the cooldown: prompt again
-        await _eval(dm, _room(), temp=26.0, rh=65.0, now=prompt_at + DRYING_VENT_PROMPT_COOLDOWN_S)
-        assert notify.await_count == 2
+    dm2 = DryingManager(hass)
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm2, _room(), temp=26.0, rh=65.0)  # no rise over the start
+        await _humid_until(dm2, T0 + 7000, step=300)
+    notify.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_no_vent_prompt_below_rh_floor(env):
+async def test_no_open_prompt_below_rh_floor(env):
     hass, *_ = env
     dm = DryingManager(hass)
     with patch(NOTIFY, new_callable=AsyncMock) as notify:
-        await _eval(dm, _room(), temp=20.0, rh=40.0)
-        # Much more water but warm, so RH stays below 60 %
-        for i in range(1, 20):
-            await _eval(dm, _room(), temp=30.0, rh=55.0, now=T0 + 30 * i)
+        await _eval(dm, _room(), temp=30.0, rh=45.0, outdoor_temp=0.0)
+        await _humid_until(dm, T0 + 7000, temp=30.0, rh=45.0, step=300, outdoor_temp=0.0)
     notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_open_prompt_when_laundry_nearly_dry(env):
+    """AH flat for 30 min and RH 5 points below its peak: the laundry has stopped releasing water."""
+    hass, *_ = env
+    dm = DryingManager(hass)
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=22.0, rh=70.0, outdoor_temp=0.0)  # RH peak 70 %
+        # Room heated up: same water, RH falls to ~55 %, AH constant (~13.6 g/m³ vs ~4.8 outdoors)
+        await _humid_until(dm, T0 + 7000, temp=26.0, rh=55.0, step=300, outdoor_temp=0.0)
+    notify.assert_not_awaited()
+
+    # Same air, but RH near its peak: still wet, prompt
+    dm2 = DryingManager(hass)
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm2, _room(), temp=26.0, rh=57.0, outdoor_temp=0.0)
+        await _humid_until(dm2, T0 + DRYING_VENT_MIN_INTERVAL_S, temp=26.0, rh=55.0, outdoor_temp=0.0)
+    assert notify.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_no_prompts_while_window_state_unknown(env):
+    hass, *_ = env
+    dm = DryingManager(hass)
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=26.0, rh=65.0, outdoor_temp=0.0, window_open=None)
+        live = await _humid_until(dm, T0 + 7000, step=300, outdoor_temp=0.0, window_open=None)
+    notify.assert_not_awaited()
+    assert live["window_open_since"] is None
+
+
+async def _open_window(dm, at, temp=26.0, rh=65.0, **kwargs):
+    return await _eval(dm, _room(), temp=temp, rh=rh, window_open=True, now=at, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_close_prompt_after_three_minutes_and_one_reminder(env):
+    hass, *_ = env
+    dm = DryingManager(hass)
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=26.0, rh=65.0)
+        live = await _open_window(dm, T0 + 600)
+        assert live["window_open_since"] == T0 + 600
+        assert live["close_suggested"] is False
+        live = await _open_window(dm, T0 + 600 + DRYING_VENT_CLOSE_AFTER_S - 30)
+        notify.assert_not_awaited()
+        live = await _open_window(dm, T0 + 600 + DRYING_VENT_CLOSE_AFTER_S)
+        assert _messages(notify) == ["Close the Bedroom window — heating resumes."]
+        assert live["close_suggested"] is True
+        await _open_window(dm, T0 + 600 + DRYING_VENT_CLOSE_AFTER_S + 60)
+        assert notify.await_count == 1  # once per opening
+        await _open_window(dm, T0 + 600 + DRYING_VENT_MAX_OPEN_S)
+        assert "still open" in _messages(notify)[-1]
+        await _open_window(dm, T0 + 600 + DRYING_VENT_MAX_OPEN_S + 600)
+        assert notify.await_count == 2
+        live = await _eval(dm, _room(), temp=26.0, rh=65.0, now=T0 + 2000)
+        assert (live["close_suggested"], live["window_open_since"]) == (False, None)
+        # A new opening gets its own close prompt
+        await _open_window(dm, T0 + 3000)
+        await _open_window(dm, T0 + 3000 + DRYING_VENT_CLOSE_AFTER_S)
+        assert notify.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_close_prompt_once_half_the_excess_is_exchanged(env):
+    """Indoors 16 g/m³, outdoors ~4.8: below ~10.4 g/m³ after a minute the exchange is good enough."""
+    hass, *_ = env
+    dm = DryingManager(hass)
+    out = {"outdoor_temp": 0.0, "outdoor_humidity": 100.0}
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=26.0, rh=65.0, **out)
+        await _open_window(dm, T0 + 600, **out)
+        await _open_window(dm, T0 + 630, temp=25.0, rh=35.0, **out)  # exchanged, but under a minute
+        notify.assert_not_awaited()
+        live = await _open_window(dm, T0 + 660, temp=25.0, rh=40.0, **out)  # ~9.2 g/m³
+    assert notify.await_count == 1
+    assert live["close_suggested"] is True
+
+    # Without outdoor temperature the exchange rule cannot apply
+    dm2 = DryingManager(hass)
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm2, _room(), temp=26.0, rh=65.0)
+        await _open_window(dm2, T0 + 600)
+        await _open_window(dm2, T0 + 690, temp=25.0, rh=30.0)
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_prompt_when_room_cooled_down(env):
+    hass, *_ = env
+    dm = DryingManager(hass)
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=28.0, rh=None)  # no humidity sensor: temperature still counts
+        await _open_window(dm, T0 + 600, temp=28.0, rh=None)
+        await _open_window(dm, T0 + 630, temp=23.5, rh=None)
+        notify.assert_not_awaited()
+        await _open_window(dm, T0 + 660, temp=23.0, rh=None)
+    assert notify.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unprompted_opening_resets_the_interval_and_answers_the_prompt(env):
+    hass, *_ = env
+    dm = DryingManager(hass)
+    out = {"outdoor_temp": 0.0}
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=26.0, rh=65.0, **out)
+        live = await _humid_until(dm, T0 + DRYING_VENT_MIN_INTERVAL_S, **out)
+        assert live["vent_suggested"] is True
+        live = await _open_window(dm, T0 + 3000, **out)
+        assert live["vent_suggested"] is False
+        closed_at = T0 + 3000 + 120
+        await _eval(dm, _room(), temp=26.0, rh=65.0, now=closed_at, **out)
+        count = notify.await_count
+        # 45 min from the closing, not from the start or the prompt
+        await _humid_until(dm, closed_at + DRYING_VENT_MIN_INTERVAL_S - 60, start=closed_at + 60, step=300, **out)
+        assert notify.await_count == count
+        await _eval(dm, _room(), temp=26.0, rh=65.0, now=closed_at + DRYING_VENT_MIN_INTERVAL_S, **out)
+    assert notify.await_count == count + 1
+
+
+@pytest.mark.asyncio
+async def test_window_state_survives_restart(env):
+    hass, *_ = env
+    dm = DryingManager(hass)
+    with patch(NOTIFY, new_callable=AsyncMock) as notify:
+        await _eval(dm, _room(), temp=26.0, rh=65.0)
+        await _open_window(dm, T0 + 600)
+        await _open_window(dm, T0 + 600 + DRYING_VENT_CLOSE_AFTER_S)
+        restarted = DryingManager(hass)
+        restarted.load_state(dm.get_state())
+        live = await _open_window(restarted, T0 + 900)
+    assert notify.await_count == 1  # no second close prompt for the same opening
+    assert live["close_suggested"] is True
+    assert live["window_open_since"] == T0 + 600
 
 
 @pytest.mark.asyncio

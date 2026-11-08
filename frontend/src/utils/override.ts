@@ -100,6 +100,7 @@ export function dryingLines(live: RoomLiveData | undefined, language: string): s
   lines.push(parts.join(" · "));
   if (d.humidity == null) lines.push(localize("drying.no_humidity", language));
   if (d.vent_suggested) lines.push(localize("drying.vent_hint", language));
+  if (d.close_suggested) lines.push(localize("drying.close_hint", language));
   if (Object.keys(d.offset_boost ?? {}).length > 0)
     lines.push(localize("drying.offset_boost_active", language));
   return lines;

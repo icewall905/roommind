@@ -7,7 +7,7 @@ from homeassistant.const import Platform
 from homeassistant.core import Context
 
 DOMAIN = "roommind"
-VERSION = "1.8.3-drying.1"
+VERSION = "1.8.3-drying.2"
 
 # Platforms
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH, Platform.BINARY_SENSOR, Platform.CLIMATE]
@@ -161,9 +161,19 @@ DEFAULT_MOLD_F_RSI = 0.80  # DIN 4108-2 temperature factor; realistic for standa
 DRYING_DEFAULT_TARGET = 30.0  # °C heating target of a drying run
 DRYING_MAX_HOURS_DEFAULT = 8  # hours; a drying run always ends at the latest after this (never permanent)
 DRYING_MAX_HOURS_LIMIT = 24  # hours; longest maximum duration a drying run accepts
-DRYING_VENT_AH_RISE = 2.0  # g/m³ above the start's absolute humidity before a short airing is suggested
-DRYING_VENT_MIN_RH = 60.0  # % relative humidity below which airing is not suggested
-DRYING_VENT_PROMPT_COOLDOWN_S = 45 * 60  # minimum time between two airing suggestions
+# Airing: short, frequent openings pay off best (heat loss stays small, the moist air goes)
+DRYING_VENT_MIN_INTERVAL_S = 45 * 60  # window closed at least this long (or since the start) before the next airing
+DRYING_VENT_OPEN_RH = 50.0  # % room RH below which airing is not suggested
+DRYING_VENT_OPEN_DELTA_AH = (
+    2.0  # g/m³ the room air must hold more than the outdoor air (or the start, without outdoor temp)
+)
+DRYING_OUTDOOR_RH_FALLBACK = 90.0  # % assumed outdoor RH without an outdoor humidity sensor (conservative)
+DRYING_VENT_SUPPRESS_RH_DROP = 5.0  # % below the run's RH peak, with AH flat: the laundry is nearly dry, no airing
+DRYING_VENT_CLOSE_AFTER_S = 3 * 60  # an opening is suggested to close after this long at the latest
+DRYING_VENT_CLOSE_MIN_OPEN_S = 60  # ... or, once half the humidity excess over outdoors is gone, after this long
+DRYING_VENT_CLOSE_EXCHANGE = 0.5  # fraction of the AH excess over outdoors left when the exchange counts as done
+DRYING_VENT_TEMP_DROP_K = 5.0  # ... or once the room cooled this much since the opening
+DRYING_VENT_MAX_OPEN_S = 15 * 60  # one reminder when the window is still open after this long
 DRYING_DONE_MIN_RUNTIME_S = 2 * 3600  # a run is never declared done before this
 DRYING_DONE_FLAT_WINDOW_S = 30 * 60  # absolute humidity must not have risen over this span
 DRYING_DONE_AH_MARGIN = 0.5  # g/m³ above the start's absolute humidity still counting as dry

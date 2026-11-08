@@ -190,3 +190,35 @@ async def test_climate_control_off_ends_drying(hass, mock_config_entry, tado_reg
     store.async_update_room.assert_any_await(
         AREA, {"override_heat": None, "override_cool": None, "override_until": None, "override_type": None}
     )
+
+
+@pytest.mark.asyncio
+async def test_open_window_reported_and_outdoor_air_passed(hass, mock_config_entry, tado_registry):
+    room = _drying_room(window_sensors=["binary_sensor.bedroom_window"])
+    _, coordinator = _setup(
+        hass, mock_config_entry, room, window_sensors={"binary_sensor.bedroom_window": "on"}, outdoor_temp="2.0"
+    )
+    with patch.object(
+        coordinator._drying_manager, "async_evaluate", wraps=coordinator._drying_manager.async_evaluate
+    ) as evaluate:
+        data = await coordinator._async_update_data()
+    drying = data["rooms"][AREA]["drying"]
+    assert drying["window_open_since"] is not None
+    assert drying["close_suggested"] is False
+    assert evaluate.call_args.args[5] is True
+    assert evaluate.call_args.kwargs["outdoor_temp"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_unknown_window_state_is_not_an_opening(hass, mock_config_entry, tado_registry):
+    """Window sensors unavailable after a restart: no opening, so no close prompt later."""
+    room = _drying_room(window_sensors=["binary_sensor.bedroom_window"])
+    _, coordinator = _setup(
+        hass, mock_config_entry, room, window_sensors={"binary_sensor.bedroom_window": "unavailable"}
+    )
+    with patch.object(
+        coordinator._drying_manager, "async_evaluate", wraps=coordinator._drying_manager.async_evaluate
+    ) as evaluate:
+        data = await coordinator._async_update_data()
+    assert evaluate.call_args.args[5] is None
+    assert data["rooms"][AREA]["drying"]["window_open_since"] is None

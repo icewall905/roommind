@@ -1386,11 +1386,13 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             room,
             current_temp,
             current_humidity,
-            raw_open,
+            None if window_pending else raw_open,
             settings,
             # The thermostat's own reading includes the offset: no boost when RoomMind relies on it
             offset_boost_allowed=has_external_sensor,
             control_active=climate_active,
+            outdoor_temp=self.outdoor_temp_effective,
+            outdoor_humidity=self.outdoor_humidity,
         )
 
         return self._build_room_state_dict(

@@ -40,11 +40,18 @@ from ..const import (
     DRYING_OFFSET_PLATFORMS,
     DRYING_OFFSET_STALE_S,
     DRYING_OFFSET_STEP,
+    DRYING_OUTDOOR_RH_FALLBACK,
     DRYING_RESTORE_MAX_ATTEMPTS,
     DRYING_RESTORE_RETRY_S,
-    DRYING_VENT_AH_RISE,
-    DRYING_VENT_MIN_RH,
-    DRYING_VENT_PROMPT_COOLDOWN_S,
+    DRYING_VENT_CLOSE_AFTER_S,
+    DRYING_VENT_CLOSE_EXCHANGE,
+    DRYING_VENT_CLOSE_MIN_OPEN_S,
+    DRYING_VENT_MAX_OPEN_S,
+    DRYING_VENT_MIN_INTERVAL_S,
+    DRYING_VENT_OPEN_DELTA_AH,
+    DRYING_VENT_OPEN_RH,
+    DRYING_VENT_SUPPRESS_RH_DROP,
+    DRYING_VENT_TEMP_DROP_K,
     OVERRIDE_DRYING,
     is_override_active,
     make_roommind_context,
@@ -81,8 +88,14 @@ class DryingRun:
     ah_ema: float | None = None
     humidity: float | None = None
     last_vent_prompt_at: float | None = None
-    vent_pending: bool = False
+    vent_pending: bool = False  # open prompt sent, window not opened since
     window_closed_since: float | None = None
+    window_open_since: float | None = None
+    ah_at_open: float | None = None  # raw AH when the window opened
+    temp_at_open: float | None = None
+    close_prompted: bool = False  # close prompt sent for the current opening
+    close_reminded: bool = False
+    peak_rh: float | None = None
     saved_offsets: dict[str, float] = field(default_factory=dict)
     applied_offsets: dict[str, float] = field(default_factory=dict)
     samples: list[tuple[float, float]] = field(default_factory=list)
@@ -165,6 +178,14 @@ class DryingManager:
                 target=_float_or_none(raw.get("target")),
                 baseline_ah=_float_or_none(raw.get("baseline_ah")),
                 last_vent_prompt_at=_float_or_none(raw.get("last_vent_prompt_at")),
+                vent_pending=raw.get("vent_pending") is True,
+                window_closed_since=_float_or_none(raw.get("window_closed_since")),
+                window_open_since=_float_or_none(raw.get("window_open_since")),
+                ah_at_open=_float_or_none(raw.get("ah_at_open")),
+                temp_at_open=_float_or_none(raw.get("temp_at_open")),
+                close_prompted=raw.get("close_prompted") is True,
+                close_reminded=raw.get("close_reminded") is True,
+                peak_rh=_float_or_none(raw.get("peak_rh")),
                 saved_offsets=_offset_dict(raw.get("saved_offsets")),
                 applied_offsets=_offset_dict(raw.get("applied_offsets")),
             )
@@ -196,6 +217,14 @@ class DryingManager:
                     "target": run.target,
                     "baseline_ah": run.baseline_ah,
                     "last_vent_prompt_at": run.last_vent_prompt_at,
+                    "vent_pending": run.vent_pending,
+                    "window_closed_since": run.window_closed_since,
+                    "window_open_since": run.window_open_since,
+                    "ah_at_open": run.ah_at_open,
+                    "temp_at_open": run.temp_at_open,
+                    "close_prompted": run.close_prompted,
+                    "close_reminded": run.close_reminded,
+                    "peak_rh": run.peak_rh,
                     "saved_offsets": dict(run.saved_offsets),
                     "applied_offsets": dict(run.applied_offsets),
                 }
@@ -235,14 +264,18 @@ class DryingManager:
         room: dict,
         current_temp: float | None,
         current_humidity: float | None,
-        window_open: bool,
+        window_open: bool | None,
         settings: dict,
         now: float | None = None,
         *,
         offset_boost_allowed: bool = True,
         control_active: bool = True,
+        outdoor_temp: float | None = None,
+        outdoor_humidity: float | None = None,
     ) -> dict | None:
         """Advance the room's drying run by one cycle.
+
+        *window_open* None means the window state is not known yet: no airing prompts then.
 
         *offset_boost_allowed* is False for rooms that read their temperature from the
         thermostat itself: an offset would falsify that reading. A room whose climate
@@ -279,22 +312,34 @@ class DryingManager:
             run.target = room.get("override_heat")
             self.state_dirty = True
 
-        if window_open:
-            run.window_closed_since = None
-            run.vent_pending = False
-        elif run.window_closed_since is None:
-            run.window_closed_since = now
+        ah_raw = (
+            absolute_humidity(current_temp, current_humidity)
+            if current_temp is not None and current_humidity is not None
+            else None
+        )
+        ah_out = (
+            absolute_humidity(
+                outdoor_temp, outdoor_humidity if outdoor_humidity is not None else DRYING_OUTDOOR_RH_FALLBACK
+            )
+            if outdoor_temp is not None
+            else None
+        )
+
+        if window_open is not None:
+            self._track_window(run, window_open, now, current_temp, ah_raw)
+            if window_open:
+                await self._async_close_prompt(area_id, area_name, settings, run, now, current_temp, ah_raw, ah_out)
 
         run.humidity = current_humidity
-        if current_temp is None or current_humidity is None:
+        if ah_raw is None or current_humidity is None:
             return self._live(run)
 
-        ah = absolute_humidity(current_temp, current_humidity)
-        run.ah_ema = ah if run.ah_ema is None else run.ah_ema + DRYING_AH_EMA_ALPHA * (ah - run.ah_ema)
+        run.ah_ema = ah_raw if run.ah_ema is None else run.ah_ema + DRYING_AH_EMA_ALPHA * (ah_raw - run.ah_ema)
         run.samples.append((now, run.ah_ema))
         run.samples = [s for s in run.samples if s[0] >= now - DRYING_AH_HISTORY_S]
+        run.peak_rh = current_humidity if run.peak_rh is None else max(run.peak_rh, current_humidity)
         if run.baseline_ah is None:
-            run.baseline_ah = ah
+            run.baseline_ah = ah_raw
             self.state_dirty = True
 
         if self._is_done(run, now):
@@ -302,12 +347,7 @@ class DryingManager:
             await self._async_finish(area_id, area_name, settings, END_DONE)
             return None
 
-        if (
-            not window_open
-            and run.ah_ema >= run.baseline_ah + DRYING_VENT_AH_RISE
-            and current_humidity >= DRYING_VENT_MIN_RH
-            and (run.last_vent_prompt_at is None or now - run.last_vent_prompt_at >= DRYING_VENT_PROMPT_COOLDOWN_S)
-        ):
+        if window_open is False and self._open_pays_off(run, now, current_humidity, ah_out):
             run.last_vent_prompt_at = now
             run.vent_pending = True
             self.state_dirty = True
@@ -316,7 +356,7 @@ class DryingManager:
                 area_id,
                 settings,
                 message=(
-                    f"Open the {area_name} window for ~10 minutes to let the moisture out "
+                    f"Open the {area_name} window for a few minutes to let the moisture out "
                     f"({current_humidity:.0f}% humidity)."
                 ),
                 title=NOTIFICATION_TITLE,
@@ -324,21 +364,104 @@ class DryingManager:
 
         return self._live(run)
 
+    def _track_window(
+        self, run: DryingRun, window_open: bool, now: float, temp: float | None, ah_raw: float | None
+    ) -> None:
+        """Note openings and closings of the window."""
+        if window_open:
+            run.window_closed_since = None
+            if run.window_open_since is None:
+                run.window_open_since = now
+                run.ah_at_open = ah_raw
+                run.temp_at_open = temp
+                run.close_prompted = False
+                run.close_reminded = False
+                run.vent_pending = False
+                self.state_dirty = True
+            return
+        if run.window_open_since is not None:
+            run.window_open_since = None
+            run.ah_at_open = None
+            run.temp_at_open = None
+            run.close_prompted = False
+            run.close_reminded = False
+            self.state_dirty = True
+        if run.window_closed_since is None:
+            run.window_closed_since = now
+            self.state_dirty = True
+
+    async def _async_close_prompt(
+        self,
+        area_id: str,
+        area_name: str,
+        settings: dict,
+        run: DryingRun,
+        now: float,
+        temp: float | None,
+        ah_raw: float | None,
+        ah_out: float | None,
+    ) -> None:
+        """Ask to close an open window once the air exchange is good enough; remind once if it stays open."""
+        open_for = now - (run.window_open_since or now)
+        if not run.close_prompted:
+            exchanged = (
+                open_for >= DRYING_VENT_CLOSE_MIN_OPEN_S
+                and ah_out is not None
+                and ah_raw is not None
+                and run.ah_at_open is not None
+                and ah_raw <= ah_out + DRYING_VENT_CLOSE_EXCHANGE * (run.ah_at_open - ah_out)
+            )
+            cooled = (
+                temp is not None and run.temp_at_open is not None and run.temp_at_open - temp >= DRYING_VENT_TEMP_DROP_K
+            )
+            if not (open_for >= DRYING_VENT_CLOSE_AFTER_S or exchanged or cooled):
+                return
+            run.close_prompted = True
+            message = f"Close the {area_name} window — heating resumes."
+        elif not run.close_reminded and open_for >= DRYING_VENT_MAX_OPEN_S:
+            run.close_reminded = True
+            message = f"The {area_name} window is still open — close it so heating resumes."
+        else:
+            return
+        self.state_dirty = True
+        await async_send_drying_notification(self.hass, area_id, settings, message=message, title=NOTIFICATION_TITLE)
+
     @staticmethod
-    def _is_done(run: DryingRun, now: float) -> bool:
+    def _ah_flat(run: DryingRun, now: float) -> bool:
+        """AH has not risen over the last flat window, with the window closed all that time."""
+        if run.ah_ema is None:
+            return False
+        if run.window_closed_since is None or now - run.window_closed_since < DRYING_DONE_FLAT_WINDOW_S:
+            return False
+        older = [ema for ts, ema in run.samples if ts <= now - DRYING_DONE_FLAT_WINDOW_S]
+        return bool(older) and run.ah_ema - older[-1] <= DRYING_DONE_RISE_TOLERANCE
+
+    def _open_pays_off(self, run: DryingRun, now: float, rh: float, ah_out: float | None) -> bool:
+        """Airing is worth it: closed long enough, humid, more water inside than outside, laundry still wet."""
+        if run.ah_ema is None or run.baseline_ah is None or run.window_closed_since is None:
+            return False
+        if now - run.window_closed_since < DRYING_VENT_MIN_INTERVAL_S:
+            return False
+        if run.last_vent_prompt_at is not None and now - run.last_vent_prompt_at < DRYING_VENT_MIN_INTERVAL_S:
+            return False  # an ignored prompt is repeated at this pace at most
+        if rh < DRYING_VENT_OPEN_RH:
+            return False
+        reference = ah_out if ah_out is not None else run.baseline_ah
+        if run.ah_ema - reference < DRYING_VENT_OPEN_DELTA_AH:
+            return False
+        # Laundry nearly dry: AH no longer rising and RH clearly past its peak
+        peak = run.peak_rh if run.peak_rh is not None else rh
+        return not (self._ah_flat(run, now) and peak - rh >= DRYING_VENT_SUPPRESS_RH_DROP)
+
+    @classmethod
+    def _is_done(cls, run: DryingRun, now: float) -> bool:
         """The laundry stopped releasing water: AH flat for a while with the window closed, back near the start."""
         if run.ah_ema is None or run.baseline_ah is None:
             return False
         if now - run.started_at < DRYING_DONE_MIN_RUNTIME_S:
             return False
-        # An airing lowers the humidity for a while whether the laundry is dry or not
-        if run.window_closed_since is None or now - run.window_closed_since < DRYING_DONE_FLAT_WINDOW_S:
-            return False
-        older = [ema for ts, ema in run.samples if ts <= now - DRYING_DONE_FLAT_WINDOW_S]
-        if not older:
-            return False
-        rising = run.ah_ema - older[-1] > DRYING_DONE_RISE_TOLERANCE
-        return not rising and run.ah_ema <= run.baseline_ah + DRYING_DONE_AH_MARGIN
+        # An airing lowers the humidity for a while whether the laundry is dry or not (_ah_flat needs it closed)
+        return cls._ah_flat(run, now) and run.ah_ema <= run.baseline_ah + DRYING_DONE_AH_MARGIN
 
     @staticmethod
     def _live(run: DryingRun) -> dict:
@@ -349,7 +472,9 @@ class DryingManager:
             "humidity": run.humidity,
             "abs_humidity": round(run.ah_ema, 2) if run.ah_ema is not None else None,
             "baseline_abs_humidity": round(run.baseline_ah, 2) if run.baseline_ah is not None else None,
-            "vent_suggested": run.vent_pending and run.window_closed_since is not None,
+            "vent_suggested": run.vent_pending and run.window_open_since is None,
+            "close_suggested": run.close_prompted and run.window_open_since is not None,
+            "window_open_since": run.window_open_since,
             "last_vent_prompt_at": run.last_vent_prompt_at,
             "offset_boost": dict(run.applied_offsets),
         }
